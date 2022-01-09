@@ -60,6 +60,7 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
 
     @PostConstruct
     void connect() {
+        this.LOGGER.info("Load configuration...");
         ConnectionFactory factory = new ConnectionFactory();
 
         final Config config = ConfigProvider.getConfig();
@@ -76,6 +77,7 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
         factory.setPassword(password.orElse("guest"));
 
         try {
+            this.LOGGER.info("Creating connection with rabbitmq...");
             this.connection = factory.newConnection();
             this.channel = this.connection.createChannel();
             if (exchangeName.isPresent()) {
