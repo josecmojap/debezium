@@ -36,6 +36,8 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
     private static final String PROP_EXCHANGE_NAME = PROP_PREFIX + "exchange.name";
     private static final String PROP_STREAM_QUEUE_NAME = PROP_PREFIX + "stream.name";
 
+    private Map<String,String> bindings = new HashMap<String,String>();
+
     private Optional<String> host;
     private Optional<Integer> port;
     private Optional<String> user;
@@ -81,7 +83,7 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
             this.connection = factory.newConnection();
             this.channel = this.connection.createChannel();
             if (exchangeName.isPresent()) {
-                this.channel.exchangeDeclare(exchangeName.get(), "topic");
+                this.channel.exchangeDeclare(exchangeName.get(), "cdc");
                 this.streamLike = false;
             }
             else {
@@ -118,6 +120,13 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
                             message.getBytes("UTF-8"));
                 }
                 else {
+                    if (!this.bindings.containsKey(routingKey)) {
+                        String queueName = routingKey.replace(".", "_");
+                        this.channel.queueDeclare(queueName, true, false, false, null);
+                        this.channel.queueBind(queueName, this.exchangeName.get(), routingKey);
+                        this.bindings.put(routingKey, queueName);
+                        LOGGER.info("Queue {} is creating binding from exchange {} with routing key {}", queueName, exchangeName.get(), routingKey);
+                    }
                     LOGGER.info("Post message to exchange {} with routing key {}", exchangeName.get(), routingKey);
                     this.channel.basicPublish(exchangeName.get(), routingKey, new AMQP.BasicProperties().builder().headers(headers).build(), message.getBytes("UTF-8"));
                 }
