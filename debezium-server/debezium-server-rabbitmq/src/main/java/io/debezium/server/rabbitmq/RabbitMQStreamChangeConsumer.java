@@ -99,7 +99,7 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
             throws InterruptedException {
 
         for (ChangeEvent<Object, Object> record : records) {
-            LOGGER.trace("Received event '{}'", record);
+            LOGGER.info("Received event '{}'", record);
 
             try {
 
@@ -109,11 +109,11 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
                 headers.put("record_key", (record.key() != null) ? getString(record.key()) : nullKey);
 
                 if (this.isStreamLike()) {
-                    this.channel.basicPublish(exchangeName.get(), routingKey, new AMQP.BasicProperties().builder().headers(headers).build(), message.getBytes("UTF-8"));
-                }
-                else {
                     this.channel.basicPublish(queueName.orElse("cdc_stream"), routingKey, new AMQP.BasicProperties().builder().headers(headers).build(),
                             message.getBytes("UTF-8"));
+                }
+                else {
+                    this.channel.basicPublish(exchangeName.get(), routingKey, new AMQP.BasicProperties().builder().headers(headers).build(), message.getBytes("UTF-8"));
                 }
 
             }
