@@ -33,6 +33,7 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
     private static final String PROP_PORT = PROP_PREFIX + "port";
     private static final String PROP_USER = PROP_PREFIX + "user";
     private static final String PROP_PASSWORD = PROP_PREFIX + "password";
+    private static final String PROP_STREAM_LIKE = PROP_PREFIX + "like";
     private static final String PROP_EXCHANGE_NAME = PROP_PREFIX + "exchange.name";
     private static final String PROP_STREAM_QUEUE_NAME = PROP_PREFIX + "stream.name";
 
@@ -48,7 +49,7 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
     private Connection connection;
     private Channel channel;
 
-    private boolean streamLike = true;
+    private Optional<Boolean> streamLike;
 
     @ConfigProperty(name = PROP_PREFIX + "null.key", defaultValue = "default")
     String nullKey;
@@ -57,7 +58,7 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
     String nullValue;
 
     public boolean isStreamLike() {
-        return streamLike;
+        return streamLike.orElse(false);
     }
 
     @PostConstruct
@@ -70,6 +71,7 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
         port = config.getOptionalValue(PROP_PORT, Integer.class);
         user = config.getOptionalValue(PROP_USER, String.class);
         password = config.getOptionalValue(PROP_PASSWORD, String.class);
+        streamLike = config.getOptionalValue(PROP_STREAM_LIKE, Boolean.class);
         exchangeName = config.getOptionalValue(PROP_EXCHANGE_NAME, String.class);
         queueName = config.getOptionalValue(PROP_STREAM_QUEUE_NAME, String.class);
 
@@ -82,14 +84,12 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
             this.LOGGER.info("Creating connection with rabbitmq...");
             this.connection = factory.newConnection();
             this.channel = this.connection.createChannel();
-            if (exchangeName.isPresent()) {
-                this.channel.exchangeDeclare(exchangeName.get(), "cdc");
-                this.streamLike = false;
-            }
-            else {
+            if (isStreamLike()) {
                 this.channel.queueDeclare(queueName.orElse("cdc_stream"), true, false, false, Collections.singletonMap("x-queue-type", "stream"));
+            } else {
+                // Durable exchange
+                this.channel.exchangeDeclare(exchangeName.orElse("cdc"), "direct", true);
             }
-
         }
         catch (Exception e) {
             this.LOGGER.error("Failed to connect", e);
