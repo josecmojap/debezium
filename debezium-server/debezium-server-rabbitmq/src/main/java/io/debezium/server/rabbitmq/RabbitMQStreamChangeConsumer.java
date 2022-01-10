@@ -121,7 +121,7 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
                 }
                 else {
                     if (!this.bindings.containsKey(routingKey)) {
-                        String queueName = routingKey.replace(".", "_");
+                        String queueName = routingKey;
                         this.channel.queueDeclare(queueName, true, false, false, null);
                         this.channel.queueBind(queueName, this.exchangeName.get(), routingKey);
                         this.bindings.put(routingKey, queueName);
