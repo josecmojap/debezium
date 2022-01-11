@@ -33,7 +33,7 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
     private static final String PROP_PORT = PROP_PREFIX + "port";
     private static final String PROP_USER = PROP_PREFIX + "user";
     private static final String PROP_PASSWORD = PROP_PREFIX + "password";
-    private static final String PROP_STREAM_LIKE = PROP_PREFIX + "like";
+    private static final String PROP_STREAM_LIKE = PROP_PREFIX + ".stream.like";
     private static final String PROP_EXCHANGE_NAME = PROP_PREFIX + "exchange.name";
     private static final String PROP_STREAM_QUEUE_NAME = PROP_PREFIX + "stream.name";
 
@@ -88,7 +88,7 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
                 this.channel.queueDeclare(queueName.orElse("cdc_stream"), true, false, false, Collections.singletonMap("x-queue-type", "stream"));
             } else {
                 // Durable exchange
-                this.channel.exchangeDeclare(exchangeName.orElse("cdc"), "direct", true);
+                this.channel.exchangeDeclare(exchangeName.orElse("cdc"), "topic");
             }
         }
         catch (Exception e) {
