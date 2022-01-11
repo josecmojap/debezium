@@ -33,9 +33,11 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
     private static final String PROP_PORT = PROP_PREFIX + "port";
     private static final String PROP_USER = PROP_PREFIX + "user";
     private static final String PROP_PASSWORD = PROP_PREFIX + "password";
-    private static final String PROP_STREAM_LIKE = PROP_PREFIX + ".stream.like";
-    private static final String PROP_EXCHANGE_NAME = PROP_PREFIX + "exchange.name";
+    private static final String PROP_STREAM_LIKE = PROP_PREFIX + "stream.like";
     private static final String PROP_STREAM_QUEUE_NAME = PROP_PREFIX + "stream.name";
+    private static final String PROP_EXCHANGE_NAME = PROP_PREFIX + "exchange.name";
+    private static final String PROP_EXCHANGE_TYPE = PROP_PREFIX + "exchange.type";
+    private static final String PROP_EXCHANGE_DURABLE = PROP_PREFIX + "exchange.durable";
 
     private Map<String,String> bindings = new HashMap<String,String>();
 
@@ -43,13 +45,15 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
     private Optional<Integer> port;
     private Optional<String> user;
     private Optional<String> password;
-    private Optional<String> exchangeName;
+    private Optional<Boolean> streamLike;
     private Optional<String> queueName;
+    private Optional<String> exchangeName;
+    private Optional<String> exchangeType;
+    private Optional<Boolean> exchangeDurable;
 
     private Connection connection;
     private Channel channel;
 
-    private Optional<Boolean> streamLike;
 
     @ConfigProperty(name = PROP_PREFIX + "null.key", defaultValue = "default")
     String nullKey;
@@ -67,13 +71,25 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
         ConnectionFactory factory = new ConnectionFactory();
 
         final Config config = ConfigProvider.getConfig();
-        host = config.getOptionalValue(PROP_HOST, String.class);
-        port = config.getOptionalValue(PROP_PORT, Integer.class);
-        user = config.getOptionalValue(PROP_USER, String.class);
-        password = config.getOptionalValue(PROP_PASSWORD, String.class);
-        streamLike = config.getOptionalValue(PROP_STREAM_LIKE, Boolean.class);
-        exchangeName = config.getOptionalValue(PROP_EXCHANGE_NAME, String.class);
-        queueName = config.getOptionalValue(PROP_STREAM_QUEUE_NAME, String.class);
+        this.host = config.getOptionalValue(PROP_HOST, String.class);
+        this.port = config.getOptionalValue(PROP_PORT, Integer.class);
+        this.user = config.getOptionalValue(PROP_USER, String.class);
+        this.password = config.getOptionalValue(PROP_PASSWORD, String.class);
+        this.streamLike = config.getOptionalValue(PROP_STREAM_LIKE, Boolean.class);
+        this.queueName = config.getOptionalValue(PROP_STREAM_QUEUE_NAME, String.class);
+        this.exchangeName = config.getOptionalValue(PROP_EXCHANGE_NAME, String.class);
+        this.exchangeType = config.getOptionalValue(PROP_EXCHANGE_TYPE, String.class);
+        this.exchangeDurable = config.getOptionalValue(PROP_EXCHANGE_DURABLE, Boolean.class);
+
+        this.LOGGER.info("         {} = {}", PROP_HOST, this.host.orElse("localhost"));
+        this.LOGGER.info("         {} = {}", PROP_PORT, this.port.orElse(5672));
+        this.LOGGER.info("         {} = {}", PROP_USER, this.user.orElse("guest"));
+        this.LOGGER.info("         {} = {}", PROP_PASSWORD, "*********");
+        this.LOGGER.info("         {} = {}", PROP_STREAM_LIKE, this.streamLike.get());
+        this.LOGGER.info("         {} = {}", PROP_STREAM_QUEUE_NAME, this.queueName.orElse("cdc_stream");
+        this.LOGGER.info("         {} = {}", PROP_EXCHANGE_NAME, this.exchangeName.orElse("cdc"));
+        this.LOGGER.info("         {} = {}", PROP_EXCHANGE_TYPE, this.exchangeType.orElse("direct"));
+        this.LOGGER.info("         {} = {}", PROP_EXCHANGE_DURABLE, this.exchangeDurable.orElse(true));
 
         factory.setHost(host.orElse("localhost"));
         factory.setPort(port.orElse(5672));
@@ -85,10 +101,11 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
             this.connection = factory.newConnection();
             this.channel = this.connection.createChannel();
             if (isStreamLike()) {
+                this.LOGGER.info("Creating stream queue {}...", this.queueName.orElse("cdc_stream"));
                 this.channel.queueDeclare(queueName.orElse("cdc_stream"), true, false, false, Collections.singletonMap("x-queue-type", "stream"));
             } else {
-                // Durable exchange
-                this.channel.exchangeDeclare(exchangeName.orElse("cdc"), "topic");
+                this.LOGGER.info("Creating exchange {} type {} durable={}...", this.exchangeName.orElse("cdc"), this.exchangeType.orElse("direct"), this.exchangeDurable.orElse(false));
+                this.channel.exchangeDeclare(exchangeName.orElse("cdc"), this.exchangeType.orElse("direct"), this.exchangeDurable.orElse(false));
             }
         }
         catch (Exception e) {
@@ -123,12 +140,12 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
                     if (!this.bindings.containsKey(routingKey)) {
                         String queueName = routingKey;
                         this.channel.queueDeclare(queueName, true, false, false, null);
-                        this.channel.queueBind(queueName, this.exchangeName.get(), routingKey);
+                        this.channel.queueBind(queueName, this.exchangeName.orElse("cdc"), routingKey);
                         this.bindings.put(routingKey, queueName);
-                        LOGGER.info("Queue {} is creating binding from exchange {} with routing key {}", queueName, exchangeName.get(), routingKey);
+                        LOGGER.info("Queue {} is creating binding from exchange {} with routing key {}", queueName, this.exchangeName.orElse("cdc"), routingKey);
                     }
-                    LOGGER.info("Post message to exchange {} with routing key {}", exchangeName.get(), routingKey);
-                    this.channel.basicPublish(exchangeName.get(), routingKey, new AMQP.BasicProperties().builder().headers(headers).build(), message.getBytes("UTF-8"));
+                    LOGGER.info("Post message to exchange {} with routing key {}", this.exchangeName.orElse("cdc"), routingKey);
+                    this.channel.basicPublish(this.exchangeName.orElse("cdc"), routingKey, new AMQP.BasicProperties().builder().headers(headers).build(), message.getBytes("UTF-8"));
                 }
 
             }
