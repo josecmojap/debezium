@@ -86,7 +86,7 @@ public class RabbitMQStreamChangeConsumer extends BaseChangeConsumer
         this.LOGGER.info("         {} = {}", PROP_USER, this.user.orElse("guest"));
         this.LOGGER.info("         {} = {}", PROP_PASSWORD, "*********");
         this.LOGGER.info("         {} = {}", PROP_STREAM_LIKE, this.streamLike.get());
-        this.LOGGER.info("         {} = {}", PROP_STREAM_QUEUE_NAME, this.queueName.orElse("cdc_stream");
+        this.LOGGER.info("         {} = {}", PROP_STREAM_QUEUE_NAME, this.queueName.orElse("cdc_stream"));
         this.LOGGER.info("         {} = {}", PROP_EXCHANGE_NAME, this.exchangeName.orElse("cdc"));
         this.LOGGER.info("         {} = {}", PROP_EXCHANGE_TYPE, this.exchangeType.orElse("direct"));
         this.LOGGER.info("         {} = {}", PROP_EXCHANGE_DURABLE, this.exchangeDurable.orElse(true));
