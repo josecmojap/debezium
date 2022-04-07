@@ -26,8 +26,23 @@ else if (DRY_RUN instanceof String) {
 }
 echo "Dry run: ${DRY_RUN}"
 
+if (IGNORE_SNAPSHOTS == null) {
+    IGNORE_SNAPSHOTS = false
+}
+else if (IGNORE_SNAPSHOTS instanceof String) {
+    IGNORE_SNAPSHOTS = Boolean.valueOf(IGNORE_SNAPSHOTS)
+}
+echo "Ignore snapshots: ${IGNORE_SNAPSHOTS}"
+
+if (CHECK_BACKPORTS == null) {
+    CHECK_BACKPORTS = false
+}
+else if (CHECK_BACKPORTS instanceof String) {
+    CHECK_BACKPORTS = Boolean.valueOf(CHECK_BACKPORTS)
+}
+
 GIT_CREDENTIALS_ID = 'debezium-github'
-JIRA_CREDENTIALS_ID = 'debezium-jira'
+JIRA_CREDENTIALS_ID = 'debezium-jira-pat'
 HOME_DIR = '/home/centos'
 GPG_DIR = 'gpg'
 
@@ -58,7 +73,8 @@ CONNECTORS_PER_VERSION = [
     '1.5' : ['mongodb', 'mysql', 'postgres', 'sqlserver', 'oracle', 'cassandra', 'db2', 'vitess'],
     '1.6' : ['mongodb', 'mysql', 'postgres', 'sqlserver', 'oracle', 'cassandra', 'db2', 'vitess'],
     '1.7' : ['mongodb', 'mysql', 'postgres', 'sqlserver', 'oracle', 'cassandra', 'db2', 'vitess'],
-    '1.8' : ['mongodb', 'mysql', 'postgres', 'sqlserver', 'oracle', 'cassandra', 'db2', 'vitess']
+    '1.8' : ['mongodb', 'mysql', 'postgres', 'sqlserver', 'oracle', 'cassandra', 'db2', 'vitess'],
+    '1.9' : ['mongodb', 'mysql', 'postgres', 'sqlserver', 'oracle', 'cassandra-3', 'cassandra-4', 'db2', 'vitess']
 ]
 
 CONNECTORS = CONNECTORS_PER_VERSION[VERSION_MAJOR_MINOR]
@@ -81,9 +97,8 @@ STAGING_REPO_ID = null
 ADDITIONAL_STAGING_REPO_ID = [:]
 LOCAL_MAVEN_REPO = "$HOME_DIR/.m2/repository"
 
-withCredentials([usernamePassword(credentialsId: JIRA_CREDENTIALS_ID, passwordVariable: 'PASSWORD', usernameVariable: 'USERNAME')]) {
-    JIRA_USERNAME = USERNAME
-    JIRA_PASSWORD = PASSWORD
+withCredentials([string(credentialsId: JIRA_CREDENTIALS_ID, variable: 'PAT')]) {
+    JIRA_PAT = PAT
     JIRA_BASE_URL = "https://issues.redhat.com/rest/api/2"
 }
 
@@ -155,7 +170,7 @@ def jiraGET(path, params = [:]) {
         doOutput = true
         requestMethod = 'GET'
         setRequestProperty('Content-Type', 'application/json')
-        setRequestProperty('Authorization', 'Basic ' + "$JIRA_USERNAME:$JIRA_PASSWORD".bytes.encodeBase64().toString())
+        setRequestProperty('Authorization', "Bearer $JIRA_PAT")
         new JsonSlurper().parse(new StringReader(content.text))
     }
 }
@@ -166,7 +181,7 @@ def jiraUpdate(path, payload, method = 'POST') {
         doOutput = true
         requestMethod = method
         setRequestProperty('Content-Type', 'application/json')
-        setRequestProperty('Authorization', 'Basic ' + "$JIRA_USERNAME:$JIRA_PASSWORD".bytes.encodeBase64().toString())
+        setRequestProperty('Authorization', "Bearer $JIRA_PAT")
         outputStream.withWriter { writer ->
             writer << payload
         }
@@ -204,8 +219,13 @@ def closeJiraIssues() {
 }
 
 @NonCPS
+def findVersion(jiraVersion) {
+    jiraGET('project/DBZ/versions').find { it.name == jiraVersion }
+}
+
+@NonCPS
 def closeJiraRelease() {
-    jiraUpdate(jiraGET('project/DBZ/versions').find { it.name == JIRA_VERSION }.self, JIRA_CLOSE_RELEASE, 'PUT')
+    jiraUpdate(findVersion(JIRA_VERSION).self, JIRA_CLOSE_RELEASE, 'PUT')
 }
 
 @NonCPS
@@ -224,7 +244,7 @@ def setTargetReleaseForJiraIssues() {
 def mvnRelease(repoDir, repoName, branchName, buildArgs = '') {
     def repoId = null
     dir(repoDir) {
-        sh "mvn release:clean release:prepare -DreleaseVersion=$RELEASE_VERSION -Dtag=$VERSION_TAG -DdevelopmentVersion=$DEVELOPMENT_VERSION -DpushChanges=${!DRY_RUN} -Darguments=\"-DskipTests -DskipITs -Passembly $buildArgs\" $buildArgs"
+        sh "mvn release:clean release:prepare -DreleaseVersion=$RELEASE_VERSION -Dtag=$VERSION_TAG -DdevelopmentVersion=$DEVELOPMENT_VERSION -DpushChanges=${!DRY_RUN} -DignoreSnapshots=${IGNORE_SNAPSHOTS} -Darguments=\"-DskipTests -DskipITs -Passembly $buildArgs\" $buildArgs"
         if (!DRY_RUN) {
             withCredentials([usernamePassword(credentialsId: GIT_CREDENTIALS_ID, passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]) {
                 sh "git push \"https://\${GIT_USERNAME}:\${GIT_PASSWORD}@${repoName}\" HEAD:$branchName --follow-tags"
@@ -333,8 +353,29 @@ node('Slave') {
             }
         }
 
+        stage('Check missing backports') {
+            if (!DRY_RUN && CHECK_BACKPORTS) {
+                if (!BACKPORT_FROM_TAG || !BACKPORT_TO_TAG) {
+                    error "Backport from/to tags must be provided to perform backport checks"
+                }
+                dir(DEBEZIUM_DIR) {
+                    def rc = sh(script: "github-support/list-missing-commits-by-issue-key.sh $JIRA_VERSION $BACKPORT_FROM_TAG $BACKPORT_TO_TAG $JIRA_PAT", returnStatus: true)
+                    if (rc != 0) {
+                        error "Error, there are some missing backport commits."
+                    }
+                }
+            }
+        }
+
         stage('Check Jira') {
             if (!DRY_RUN) {
+                if (findVersion(JIRA_VERSION) == null) {
+                    error "Requested release does not exist"
+                }
+                if (findVersion(PRODUCT_RELEASE) == null) {
+                    error "Requested product release does not exist"
+                }
+
                 unresolvedIssues = unresolvedIssuesFromJira()
                 issuesWithoutComponents = issuesWithoutComponentsFromJira()
                 if (!resolvedIssuesFromJira()) {

@@ -61,7 +61,7 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
     private static final String ALL_COLUMN_LOGGING = "ALL COLUMN LOGGING";
 
     private final OracleConnection jdbcConnection;
-    private final EventDispatcher<TableId> dispatcher;
+    private final EventDispatcher<OraclePartition, TableId> dispatcher;
     private final Clock clock;
     private final OracleDatabaseSchema schema;
     private final JdbcConfiguration jdbcConfiguration;
@@ -73,13 +73,17 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
     private final Duration archiveLogRetention;
     private final boolean archiveLogOnlyMode;
     private final String archiveDestinationName;
+    private final int logFileQueryMaxRetries;
+    private final Duration initialDelay;
+    private final Duration maxDelay;
 
-    private Scn startScn;
+    private Scn startScn; // startScn is the **exclusive** lower bound for mining
     private Scn endScn;
+    private Scn snapshotScn;
     private List<BigInteger> currentRedoLogSequences;
 
     public LogMinerStreamingChangeEventSource(OracleConnectorConfig connectorConfig,
-                                              OracleConnection jdbcConnection, EventDispatcher<TableId> dispatcher,
+                                              OracleConnection jdbcConnection, EventDispatcher<OraclePartition, TableId> dispatcher,
                                               ErrorHandler errorHandler, Clock clock, OracleDatabaseSchema schema,
                                               Configuration jdbcConfig, OracleStreamingChangeEventSourceMetrics streamingMetrics) {
         this.jdbcConnection = jdbcConnection;
@@ -95,6 +99,9 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
         this.archiveLogRetention = connectorConfig.getLogMiningArchiveLogRetention();
         this.archiveLogOnlyMode = connectorConfig.isArchiveLogOnlyMode();
         this.archiveDestinationName = connectorConfig.getLogMiningArchiveDestinationName();
+        this.logFileQueryMaxRetries = connectorConfig.getMaximumNumberOfLogQueryRetries();
+        this.initialDelay = connectorConfig.getLogMiningInitialDelay();
+        this.maxDelay = connectorConfig.getLogMiningMaxDelay();
     }
 
     /**
@@ -105,11 +112,28 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
      */
     @Override
     public void execute(ChangeEventSourceContext context, OraclePartition partition, OracleOffsetContext offsetContext) {
+        if (!connectorConfig.getSnapshotMode().shouldStream()) {
+            LOGGER.info("Streaming is not enabled in current configuration");
+            return;
+        }
         try {
+            // We explicitly expect auto-commit to be disabled
+            jdbcConnection.setAutoCommit(false);
+
             startScn = offsetContext.getScn();
+            snapshotScn = offsetContext.getSnapshotScn();
+            Scn firstScn = getFirstScnInLogs(jdbcConnection);
+            if (startScn.compareTo(snapshotScn) == 0) {
+                // This is the initial run of the streaming change event source.
+                // We need to compute the correct start offset for mining. That is not the snapshot offset,
+                // but the start offset of the oldest transaction that was still pending when the snapshot
+                // was taken.
+                computeStartScnForFirstMiningSession(offsetContext, firstScn);
+            }
 
             try (LogWriterFlushStrategy flushStrategy = resolveFlushStrategy()) {
-                if (!isContinuousMining && startScn.compareTo(getFirstScnInLogs(jdbcConnection)) < 0) {
+                if (!isContinuousMining && startScn.compareTo(firstScn.subtract(Scn.ONE)) < 0) {
+                    // startScn is the exclusive lower bound, so must be >= (firstScn - 1)
                     throw new DebeziumException(
                             "Online REDO LOG files or archive log files do not contain the offset scn " + startScn + ".  Please perform a new snapshot.");
                 }
@@ -123,7 +147,6 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
                         return;
                     }
 
-                    currentRedoLogSequences = getCurrentRedoLogSequences();
                     initializeRedoLogsForMining(jdbcConnection, false, startScn);
 
                     while (context.isRunning()) {
@@ -153,21 +176,15 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
                             // At this point we use a new mining session
                             endMiningSession(jdbcConnection, offsetContext);
                             initializeRedoLogsForMining(jdbcConnection, true, startScn);
-
-                            processor.abandonTransactions(connectorConfig.getLogMiningTransactionRetention());
-
-                            // This needs to be re-calculated because building the data dictionary will force the
-                            // current redo log sequence to be advanced due to a complete log switch of all logs.
-                            currentRedoLogSequences = getCurrentRedoLogSequences();
                         }
 
                         if (context.isRunning()) {
                             startMiningSession(jdbcConnection, startScn, endScn);
-                            startScn = processor.process(startScn, endScn);
+                            startScn = processor.process(partition, startScn, endScn);
+                            streamingMetrics.setCurrentBatchProcessingTime(Duration.between(start, Instant.now()));
 
                             captureSessionMemoryStatistics(jdbcConnection);
 
-                            streamingMetrics.setCurrentBatchProcessingTime(Duration.between(start, Instant.now()));
                             pauseBetweenMiningSessions();
                         }
                     }
@@ -183,6 +200,63 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
             LOGGER.info("Streaming metrics dump: {}", streamingMetrics.toString());
             LOGGER.info("Offsets: {}", offsetContext);
         }
+    }
+
+    /**
+     * Computes the start SCN for the first mining session.
+     *
+     * Normally, this would be the snapshot SCN, but if there were pending transactions at the time 
+     * the snapshot was taken, we'd miss the events in those transactions that have an SCN smaller
+     * than the snapshot SCN.
+     *
+     * @param offsetContext the offset context
+     * @param firstScn the oldest SCN still available in the REDO logs
+     */
+    private void computeStartScnForFirstMiningSession(OracleOffsetContext offsetContext, Scn firstScn) {
+        // This is the initial run of the streaming change event source.
+        // We need to compute the correct start offset for mining. That is not the snapshot offset,
+        // but the start offset of the oldest transaction that was still pending when the snapshot
+        // was taken.
+        Map<String, Scn> snapshotPendingTransactions = offsetContext.getSnapshotPendingTransactions();
+        if (snapshotPendingTransactions == null || snapshotPendingTransactions.isEmpty()) {
+            // no pending transactions, we can start mining from the snapshot SCN
+            startScn = snapshotScn;
+        }
+        else {
+            // find the oldest transaction we can still fully process, and start from there.
+            Scn minScn = snapshotScn;
+            for (Map.Entry<String, Scn> entry : snapshotPendingTransactions.entrySet()) {
+                String transactionId = entry.getKey();
+                Scn scn = entry.getValue();
+                LOGGER.info("Transaction {} was pending across snapshot boundary. Start SCN = {}, snapshot SCN = {}", transactionId, scn, startScn);
+                if (scn.compareTo(firstScn) < 0) {
+                    LOGGER.warn(
+                            "Transaction {} was still ongoing while snapshot was taken, but is no longer completely recorded in the archive logs. Events will be lost. Oldest SCN in logs = {}, TX start SCN = {}",
+                            transactionId, firstScn, scn);
+                    minScn = firstScn;
+                }
+                else if (scn.compareTo(minScn) < 0) {
+                    minScn = scn;
+                }
+            }
+
+            // Make sure the commit SCN is at least the snapshot SCN - 1.
+            // This ensures we'll never emit events for transactions that were complete before the snapshot was
+            // taken.
+            Scn originalCommitScn = offsetContext.getCommitScn();
+            if (originalCommitScn == null || originalCommitScn.compareTo(snapshotScn) < 0) {
+                LOGGER.info("Setting commit SCN to {} (snapshot SCN - 1) to ensure we don't double-emit events from pre-snapshot transactions.",
+                        snapshotScn.subtract(Scn.ONE));
+                offsetContext.setCommitScn(snapshotScn.subtract(Scn.ONE));
+            }
+
+            // set start SCN to minScn
+            if (minScn.compareTo(startScn) < 0) {
+                LOGGER.info("Resetting start SCN from {} (snapshot SCN) to {} (start of oldest complete pending transaction)", startScn, minScn);
+                startScn = minScn.subtract(Scn.ONE);
+            }
+        }
+        offsetContext.setScn(startScn);
     }
 
     private void captureSessionMemoryStatistics(OracleConnection connection) throws SQLException {
@@ -226,13 +300,15 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
         return Scn.valueOf(oldestScn);
     }
 
-    private void initializeRedoLogsForMining(OracleConnection connection, boolean postEndMiningSession, Scn startScn) throws SQLException {
+    private void initializeRedoLogsForMining(OracleConnection connection, boolean postEndMiningSession, Scn startScn)
+            throws SQLException, InterruptedException {
         if (!postEndMiningSession) {
             if (OracleConnectorConfig.LogMiningStrategy.CATALOG_IN_REDO.equals(strategy)) {
                 buildDataDictionary(connection);
             }
             if (!isContinuousMining) {
-                setLogFilesForMining(connection, startScn, archiveLogRetention, archiveLogOnlyMode, archiveDestinationName);
+                currentRedoLogSequences = setLogFilesForMining(connection, startScn, archiveLogRetention, archiveLogOnlyMode,
+                        archiveDestinationName, logFileQueryMaxRetries, initialDelay, maxDelay);
             }
         }
         else {
@@ -240,7 +316,8 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
                 if (OracleConnectorConfig.LogMiningStrategy.CATALOG_IN_REDO.equals(strategy)) {
                     buildDataDictionary(connection);
                 }
-                setLogFilesForMining(connection, startScn, archiveLogRetention, archiveLogOnlyMode, archiveDestinationName);
+                currentRedoLogSequences = setLogFilesForMining(connection, startScn, archiveLogRetention, archiveLogOnlyMode,
+                        archiveDestinationName, logFileQueryMaxRetries, initialDelay, maxDelay);
             }
         }
 
@@ -391,7 +468,7 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
      * this call to prepare DDL tracking state for the upcoming LogMiner view query.
      *
      * @param connection database connection, should not be {@code null}
-     * @param startScn mining session's starting system change number (inclusive), should not be {@code null}
+     * @param startScn mining session's starting system change number (exclusive), should not be {@code null}
      * @param endScn mining session's ending system change number (inclusive), can be {@code null}
      * @throws SQLException if mining session failed to start
      */
@@ -400,7 +477,9 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
                 startScn, endScn, strategy, isContinuousMining);
         try {
             Instant start = Instant.now();
-            connection.executeWithoutCommitting(SqlUtils.startLogMinerStatement(startScn, endScn, strategy, isContinuousMining));
+            // NOTE: we treat startSCN as the _exclusive_ lower bound for mining,
+            // whereas START_LOGMNR takes an _inclusive_ lower bound. Hence the increment.
+            connection.executeWithoutCommitting(SqlUtils.startLogMinerStatement(startScn.add(Scn.ONE), endScn, strategy, isContinuousMining));
             streamingMetrics.addCurrentMiningSessionStart(Duration.between(start, Instant.now()));
         }
         catch (SQLException e) {
@@ -543,10 +622,13 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
 
                 // Check if ALL COLUMNS supplemental logging is enabled for each captured table
                 for (TableId tableId : schema.tableIds()) {
-                    if (!isTableAllColumnsSupplementalLoggingEnabled(connection, tableId)) {
-                        throw new DebeziumException("Supplemental logging not properly configured for table " + tableId + ". "
-                                + "Use: ALTER TABLE " + tableId.schema() + "." + tableId.table()
-                                + " ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS");
+                    if (!connection.isTableExists(tableId)) {
+                        LOGGER.warn("Database table '{}' no longer exists, supplemental log check skipped", tableId);
+                    }
+                    else if (!isTableAllColumnsSupplementalLoggingEnabled(connection, tableId)) {
+                        LOGGER.warn("Database table '{}' not configured with supplemental logging \"(ALL) COLUMNS\"; " +
+                                "only explicitly changed columns will be captured. " +
+                                "Use: ALTER TABLE {}.{} ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS", tableId, tableId.schema(), tableId.table());
                     }
                     final Table table = schema.tableFor(tableId);
                     if (table == null) {

@@ -5,6 +5,7 @@
  */
 package io.debezium.connector.oracle.logminer;
 
+import java.math.BigInteger;
 import java.sql.CallableStatement;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -12,6 +13,7 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -26,6 +28,7 @@ import io.debezium.connector.oracle.OracleStreamingChangeEventSourceMetrics;
 import io.debezium.connector.oracle.Scn;
 import io.debezium.relational.Column;
 import io.debezium.relational.Table;
+import io.debezium.util.DelayStrategy;
 import io.debezium.util.Strings;
 
 /**
@@ -44,37 +47,72 @@ public class LogMinerHelper {
      * @param archiveLogRetention the duration that archive logs will be mined
      * @param archiveLogOnlyMode true to mine only archive lgos, false to mine all available logs
      * @param archiveDestinationName configured archive log destination name to use, may be {@code null}
+     * @param maxRetries the number of retry attempts before giving up and throwing an exception about log state
+     * @param initialDelayMs the initial delay
+     * @param maxDelayMs the maximum delay
      * @throws SQLException if anything unexpected happens
+     * @return current redo log sequences
      */
     // todo: check RAC resiliency
-    public static void setLogFilesForMining(OracleConnection connection, Scn lastProcessedScn, Duration archiveLogRetention, boolean archiveLogOnlyMode,
-                                            String archiveDestinationName)
+    public static List<BigInteger> setLogFilesForMining(OracleConnection connection, Scn lastProcessedScn, Duration archiveLogRetention,
+                                                        boolean archiveLogOnlyMode, String archiveDestinationName, int maxRetries,
+                                                        Duration initialDelay, Duration maxDelay)
             throws SQLException {
+        List<BigInteger> ret = new LinkedList<>();
         removeLogFilesFromMining(connection);
 
-        List<LogFile> logFilesForMining = getLogFilesForOffsetScn(connection, lastProcessedScn, archiveLogRetention, archiveLogOnlyMode, archiveDestinationName);
-        if (!logFilesForMining.stream().anyMatch(l -> l.getFirstScn().compareTo(lastProcessedScn) <= 0)) {
-            Scn minScn = logFilesForMining.stream()
-                    .map(LogFile::getFirstScn)
-                    .min(Scn::compareTo)
-                    .orElse(Scn.NULL);
+        // Restrict max attempts to 0 or greater values (sanity-check)
+        // the code will do at least 1 attempt and up to maxAttempts extra polls based on configuration
+        final int maxAttempts = Math.max(maxRetries, 0);
+        final DelayStrategy retryStrategy = DelayStrategy.exponential(initialDelay.toMillis(), maxDelay.toMillis());
 
-            if ((minScn.isNull() || logFilesForMining.isEmpty()) && archiveLogOnlyMode) {
-                throw new DebeziumException("The log.mining.archive.log.only mode was recently enabled and the offset SCN " +
-                        lastProcessedScn + "is not yet in any available archive logs. " +
-                        "Please perform an Oracle log switch and restart the connector.");
+        // We perform a retry algorithm here as there is a race condition where Oracle may update the V$LOG table
+        // but the V$ARCHIVED_LOG lags behind and a single-shot SQL query may return an inconsistent set of results
+        // due to Oracle performing the operation non-atomically.
+        List<LogFile> logFilesForMining = new ArrayList<>();
+        for (int attempt = 0; attempt <= maxAttempts; ++attempt) {
+            logFilesForMining.addAll(getLogFilesForOffsetScn(connection, lastProcessedScn, archiveLogRetention,
+                    archiveLogOnlyMode, archiveDestinationName));
+            // we don't need lastProcessedSCN in the logs, as that one was already processed, but we do want
+            // the next SCN to be present, as that is where we'll start processing from.
+            if (!hasLogFilesStartingBeforeOrAtScn(logFilesForMining, lastProcessedScn.add(Scn.ONE))) {
+                LOGGER.info("No logs available yet (attempt {})...", attempt + 1);
+                logFilesForMining.clear();
+                retryStrategy.sleepWhen(true);
+                continue;
             }
-            throw new IllegalStateException("None of log files contains offset SCN: " + lastProcessedScn + ", re-snapshot is required.");
+
+            List<String> logFilesNames = logFilesForMining.stream().map(LogFile::getFileName).collect(Collectors.toList());
+            for (String file : logFilesNames) {
+                LOGGER.trace("Adding log file {} to mining session", file);
+                String addLogFileStatement = SqlUtils.addLogFileStatement("DBMS_LOGMNR.ADDFILE", file);
+                executeCallableStatement(connection, addLogFileStatement);
+            }
+
+            LOGGER.debug("Last mined SCN: {}, Log file list to mine: {}", lastProcessedScn, logFilesNames);
+            for (LogFile logFile : logFilesForMining) {
+                if (logFile.isCurrent()) {
+                    ret.add(logFile.getSequence());
+                }
+            }
+            return ret;
         }
 
-        List<String> logFilesNames = logFilesForMining.stream().map(LogFile::getFileName).collect(Collectors.toList());
-        for (String file : logFilesNames) {
-            LOGGER.trace("Adding log file {} to mining session", file);
-            String addLogFileStatement = SqlUtils.addLogFileStatement("DBMS_LOGMNR.ADDFILE", file);
-            executeCallableStatement(connection, addLogFileStatement);
+        final Scn minScn = getMinimumScn(logFilesForMining);
+        if ((minScn.isNull() || logFilesForMining.isEmpty()) && archiveLogOnlyMode) {
+            throw new DebeziumException("The log.mining.archive.log.only mode was recently enabled and the offset SCN " +
+                    lastProcessedScn + "is not yet in any available archive logs. " +
+                    "Please perform an Oracle log switch and restart the connector.");
         }
+        throw new IllegalStateException("None of log files contains offset SCN: " + lastProcessedScn + ", re-snapshot is required.");
+    }
 
-        LOGGER.debug("Last mined SCN: {}, Log file list to mine: {}", lastProcessedScn, logFilesNames);
+    private static boolean hasLogFilesStartingBeforeOrAtScn(List<LogFile> logs, Scn scn) {
+        return logs.stream().anyMatch(l -> l.getFirstScn().compareTo(scn) <= 0);
+    }
+
+    private static Scn getMinimumScn(List<LogFile> logs) {
+        return logs.stream().map(LogFile::getFirstScn).min(Scn::compareTo).orElse(Scn.NULL);
     }
 
     static void logWarn(OracleStreamingChangeEventSourceMetrics streamingMetrics, String format, Object... args) {
@@ -98,8 +136,8 @@ public class LogMinerHelper {
      * @return list of log files
      * @throws SQLException if a database exception occurs
      */
-    public static List<LogFile> getLogFilesForOffsetScn(OracleConnection connection, Scn offsetScn, Duration archiveLogRetention, boolean archiveLogOnlyMode,
-                                                        String archiveDestinationName)
+    public static List<LogFile> getLogFilesForOffsetScn(OracleConnection connection, Scn offsetScn, Duration archiveLogRetention,
+                                                        boolean archiveLogOnlyMode, String archiveDestinationName)
             throws SQLException {
         LOGGER.trace("Getting logs to be mined for offset scn {}", offsetScn);
 
@@ -114,7 +152,7 @@ public class LogMinerHelper {
                 Scn nextScn = getScnFromString(rs.getString(3));
                 String status = rs.getString(5);
                 String type = rs.getString(6);
-                Long sequence = rs.getLong(7);
+                BigInteger sequence = new BigInteger(rs.getString(7));
                 if ("ARCHIVED".equals(type)) {
                     // archive log record
                     LogFile logFile = new LogFile(fileName, firstScn, nextScn, sequence, LogFile.Type.ARCHIVE);

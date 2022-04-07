@@ -11,15 +11,17 @@ import io.debezium.annotation.ThreadSafe;
 import io.debezium.connector.base.ChangeEventQueueMetrics;
 import io.debezium.connector.common.CdcSourceTaskContext;
 import io.debezium.connector.mongodb.DisconnectEvent;
+import io.debezium.connector.mongodb.MongoDbPartition;
 import io.debezium.pipeline.ConnectorEvent;
-import io.debezium.pipeline.metrics.SnapshotChangeEventSourceMetrics;
+import io.debezium.pipeline.metrics.DefaultSnapshotChangeEventSourceMetrics;
 import io.debezium.pipeline.source.spi.EventMetadataProvider;
 
 /**
  * @author Chris Cranford
  */
 @ThreadSafe
-public class MongoDbSnapshotChangeEventSourceMetrics extends SnapshotChangeEventSourceMetrics implements MongoDbSnapshotChangeEventSourceMetricsMBean {
+public class MongoDbSnapshotChangeEventSourceMetrics extends DefaultSnapshotChangeEventSourceMetrics<MongoDbPartition>
+        implements MongoDbSnapshotChangeEventSourceMetricsMBean {
 
     private AtomicLong numberOfDisconnects = new AtomicLong();
 
@@ -34,7 +36,7 @@ public class MongoDbSnapshotChangeEventSourceMetrics extends SnapshotChangeEvent
     }
 
     @Override
-    public void onConnectorEvent(ConnectorEvent event) {
+    public void onConnectorEvent(MongoDbPartition partition, ConnectorEvent event) {
         if (event instanceof DisconnectEvent) {
             numberOfDisconnects.incrementAndGet();
         }

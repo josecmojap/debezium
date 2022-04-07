@@ -31,6 +31,8 @@ import org.junit.rules.TestRule;
 
 import io.debezium.config.Configuration;
 import io.debezium.connector.oracle.junit.SkipTestDependingOnAdapterNameRule;
+import io.debezium.connector.oracle.junit.SkipWhenAdapterNameIsNot;
+import io.debezium.connector.oracle.logminer.processor.TransactionCommitConsumer;
 import io.debezium.connector.oracle.util.TestHelper;
 import io.debezium.data.Envelope;
 import io.debezium.data.VerifyRecord;
@@ -916,7 +918,9 @@ public class OracleBlobDataTypesIT extends AbstractConnectorTest {
                 .with(OracleConnectorConfig.LOB_ENABLED, true)
                 .build();
 
-        LogInterceptor logInterceptor = new LogInterceptor();
+        LogInterceptor logminerLogInterceptor = new LogInterceptor(TransactionCommitConsumer.class);
+        final LogInterceptor xstreamLogInterceptor = new LogInterceptor("io.debezium.connector.oracle.xstream.LcrEventHandler");
+
         start(OracleConnector.class, config);
         assertConnectorIsRunning();
         waitForSnapshotToBeCompleted(TestHelper.CONNECTOR_NAME, TestHelper.SERVER_NAME);
@@ -943,7 +947,9 @@ public class OracleBlobDataTypesIT extends AbstractConnectorTest {
                 + "dbms_lob.erase(loc_b, amount, 1); end;");
 
         // Wait until the log has recorded the message.
-        Awaitility.await().atMost(Duration.ofMinutes(1)).until(() -> logInterceptor.containsWarnMessage("LOB_ERASE for table"));
+        Awaitility.await().atMost(Duration.ofMinutes(1))
+                .until(() -> logminerLogInterceptor.containsWarnMessage("LOB_ERASE for table")
+                        || xstreamLogInterceptor.containsWarnMessage("LOB_ERASE for table"));
         assertNoRecordsToConsume();
     }
 
@@ -1129,7 +1135,15 @@ public class OracleBlobDataTypesIT extends AbstractConnectorTest {
             record = table.get(0);
             after = ((Struct) record.value()).getStruct(Envelope.FieldName.AFTER);
             assertThat(after.get("ID")).isEqualTo(3);
-            assertThat(after.get("DATA")).isNull();
+            if (logMinerAdapter) {
+                // With LogMiner, the first event only contains the initialization of id
+                assertThat(after.get("DATA")).isNull();
+            }
+            else {
+                // Xstream combines the insert and subsequent LogMiner update into a single insert event
+                // automatically, so we receive the value here where the LogMiner implementation doesn't.
+                assertThat(after.get("DATA")).isEqualTo(getByteBufferFromBlob(blob1));
+            }
             assertThat(((Struct) record.value()).get("op")).isEqualTo("c");
 
             // LogMiner will pickup a separate update for BLOB fields.
@@ -1144,13 +1158,18 @@ public class OracleBlobDataTypesIT extends AbstractConnectorTest {
                 assertThat(((Struct) record.value()).get("op")).isEqualTo("u");
             }
 
-            // the second insert won't emit an update due to the blob field being set by using the
-            // SELECT_LOB_LOCATOR, LOB_WRITE, and LOB_TRIM operators when using LogMiner and the
-            // BLOB field will be excluded automatically by Xstream due to skipping chunk processing.
             record = table.get(logMinerAdapter ? 2 : 1);
             after = ((Struct) record.value()).getStruct(Envelope.FieldName.AFTER);
             assertThat(after.get("ID")).isEqualTo(4);
-            assertThat(after.get("DATA")).isNull();
+            if (logMinerAdapter) {
+                // the second insert won't emit an update due to the clob field being set by using the
+                // SELECT_LOB_LOCATOR, LOB_WRITE, and LOB_TRIM operators when using LogMiner and the
+                assertThat(after.get("DATA")).isNull();
+            }
+            else {
+                // Xstream gets this value; it will be supplied.
+                assertThat(after.get("DATA")).isEqualTo(getByteBufferFromBlob(blob2));
+            }
             assertThat(((Struct) record.value()).get("op")).isEqualTo("c");
 
             // Test updates with small blob values
@@ -1173,10 +1192,21 @@ public class OracleBlobDataTypesIT extends AbstractConnectorTest {
             connection.prepareQuery("UPDATE dbz3645 set data=? WHERE id = 4", ps -> ps.setBlob(1, blob2u), null);
             connection.commit();
 
-            // When updating a table that contains a large BLOB value but the update does not modify
-            // any of the non-BLOB fields, don't expect any events to be emitted. This is because
-            // the event is treated as a SELECT_LOB_LOCATOR and LOB_WRITE series which is ignored.
-            waitForAvailableRecords(5, TimeUnit.SECONDS);
+            if (logMinerAdapter) {
+                // When updating a table that contains a large BLOB value but the update does not modify
+                // any of the non-BLOB fields, don't expect any events to be emitted. This is because
+                // the event is treated as a SELECT_LOB_LOCATOR and LOB_WRITE series which is ignored.
+                waitForAvailableRecords(5, TimeUnit.SECONDS);
+            }
+            else {
+                // Xstream actually picks up this particular event.
+                sourceRecords = consumeRecordsByTopic(1);
+                table = sourceRecords.recordsForTopic(topicName("DBZ3645"));
+                VerifyRecord.isValidUpdate(table.get(0), "ID", 4);
+                assertThat(getBeforeField(table.get(0), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+                assertThat(getAfterField(table.get(0), "DATA")).isEqualTo(getByteBufferFromBlob(blob2u));
+            }
+
             assertNoRecordsToConsume();
 
             // Test update small blob row by changing non-blob fields
@@ -1220,23 +1250,34 @@ public class OracleBlobDataTypesIT extends AbstractConnectorTest {
             connection.commit();
 
             // Get streaming records
-            // Expect 4 records: delete for ID=5, tombstone for ID=5, create for ID=7, update for ID=7
+            // The number of expected records depends on whether this test is using LogMiner or Xstream.
+            // LogMiner expects 4: delete for ID=5, tombstone for ID=5, create for ID=7, update for ID=7
+            // XStream expects 3: delete for ID=5, tombstone for ID=5, create for ID=7
             //
             // NOTE: The extra update event is because the BLOB value is treated inline and so LogMiner
             // does not emit a SELECT_LOB_LOCATOR event but rather a subsequent update that is captured
             // but not merged since event merging happens only when LOB is enabled.
-            sourceRecords = consumeRecordsByTopic(4);
+            sourceRecords = consumeRecordsByTopic(logMinerAdapter ? 4 : 3);
             table = sourceRecords.recordsForTopic(topicName("DBZ3645"));
             VerifyRecord.isValidDelete(table.get(0), "ID", 5);
             VerifyRecord.isValidTombstone(table.get(1), "ID", 5);
             VerifyRecord.isValidInsert(table.get(2), "ID", 7);
-            VerifyRecord.isValidUpdate(table.get(3), "ID", 7);
+
+            if (logMinerAdapter) {
+                VerifyRecord.isValidUpdate(table.get(3), "ID", 7);
+            }
 
             // When updating a table's small blob and non-blob columns
             assertThat(getBeforeField(table.get(0), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
-            assertThat(getAfterField(table.get(2), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
-            assertThat(getBeforeField(table.get(3), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
-            assertThat(getAfterField(table.get(3), "DATA")).isEqualTo(getByteBufferFromBlob(blob1u2));
+            if (logMinerAdapter) {
+                assertThat(getAfterField(table.get(2), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+                assertThat(getBeforeField(table.get(3), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+                assertThat(getAfterField(table.get(3), "DATA")).isEqualTo(getByteBufferFromBlob(blob1u2));
+            }
+            else {
+                // Xstream combines the insert/update into a single insert
+                assertThat(getAfterField(table.get(2), "DATA")).isEqualTo(getByteBufferFromBlob(blob1u2));
+            }
             assertNoRecordsToConsume();
 
             // Test updating both large blob and non-blob fields
@@ -1254,7 +1295,14 @@ public class OracleBlobDataTypesIT extends AbstractConnectorTest {
 
             // When updating a table's large blob and non-blob columns, we expect placeholder in after
             assertThat(getBeforeField(table.get(0), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
-            assertThat(getAfterField(table.get(2), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+            if (logMinerAdapter) {
+                // LogMiner is unable to provide the value, so it gets emitted with the placeholder.
+                assertThat(getAfterField(table.get(2), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+            }
+            else {
+                // Xstream gets the value, so its provided.
+                assertThat(getAfterField(table.get(2), "DATA")).isEqualTo(getByteBufferFromBlob(blob2u2));
+            }
             assertNoRecordsToConsume();
 
             // Test deleting a row from a table with a small blob column
@@ -1398,6 +1446,246 @@ public class OracleBlobDataTypesIT extends AbstractConnectorTest {
         }
         finally {
             TestHelper.dropTable(connection, "dbz4276");
+        }
+    }
+
+    @Test
+    @FixFor("DBZ-4366")
+    @SkipWhenAdapterNameIsNot(value = SkipWhenAdapterNameIsNot.AdapterName.LOGMINER, reason = "Xstream marks chunks as end of rows")
+    public void shouldStreamBlobsWrittenInChunkedMode() throws Exception {
+        TestHelper.dropTable(connection, "dbz4366");
+        try {
+            connection.execute("CREATE TABLE dbz4366 (id numeric(9,0), data blob not null, primary key(id))");
+            TestHelper.streamTable(connection, "dbz4366");
+
+            Configuration config = TestHelper.defaultConfig()
+                    .with(OracleConnectorConfig.TABLE_INCLUDE_LIST, "DEBEZIUM\\.DBZ4366")
+                    .with(OracleConnectorConfig.LOB_ENABLED, true)
+                    .build();
+
+            start(OracleConnector.class, config);
+            assertConnectorIsRunning();
+
+            waitForStreamingRunning(TestHelper.CONNECTOR_NAME, TestHelper.SERVER_NAME);
+
+            connection.executeWithoutCommitting("INSERT INTO dbz4366 (id,data) values (1,EMPTY_BLOB())");
+            final String fillQuery = "DECLARE\n" +
+                    "  loc BLOB;\n" +
+                    "  i PLS_INTEGER;\n" +
+                    "BEGIN\n" +
+                    "  SELECT data into loc FROM dbz4366 WHERE id = 1 FOR UPDATE;\n" +
+                    "  DBMS_LOB.OPEN(loc, DBMS_LOB.LOB_READWRITE);\n" +
+                    "  FOR i IN 1..1024 LOOP\n" +
+                    "    DBMS_LOB.WRITEAPPEND(loc, 1024, ?);\n" +
+                    "  END LOOP;\n" +
+                    "  DBMS_LOB.CLOSE(loc);\n" +
+                    "END;";
+            connection.prepareQuery(fillQuery, ps -> ps.setBytes(1, part(BIN_DATA, 0, 1024)), null);
+            connection.execute("COMMIT");
+
+            SourceRecords records = consumeRecordsByTopic(1);
+            assertThat(records.recordsForTopic(topicName("DBZ4366"))).hasSize(1);
+
+            SourceRecord record = records.recordsForTopic(topicName("DBZ4366")).get(0);
+            Struct after = ((Struct) record.value()).getStruct(Envelope.FieldName.AFTER);
+            assertThat(after.get("ID")).isEqualTo(1);
+            ByteBuffer data = (ByteBuffer) after.get("DATA");
+            assertThat(data.array().length).isEqualTo(1024 * 1024);
+
+            // As a sanity check, there should be no more records.
+            assertNoRecordsToConsume();
+        }
+        finally {
+            TestHelper.dropTable(connection, "dbz4366");
+        }
+    }
+
+    @Test
+    @FixFor("DBZ-4366")
+    @SkipWhenAdapterNameIsNot(value = SkipWhenAdapterNameIsNot.AdapterName.LOGMINER, reason = "Xstream marks chunks as end of rows")
+    public void shouldStreamBlobsWrittenInInterleavedChunkedMode() throws Exception {
+        TestHelper.dropTable(connection, "dbz4366");
+        try {
+            connection.execute("CREATE TABLE dbz4366 (id numeric(9,0), data blob not null, data2 blob not null, primary key(id))");
+            TestHelper.streamTable(connection, "dbz4366");
+
+            Configuration config = TestHelper.defaultConfig()
+                    .with(OracleConnectorConfig.TABLE_INCLUDE_LIST, "DEBEZIUM\\.DBZ4366")
+                    .with(OracleConnectorConfig.LOB_ENABLED, true)
+                    .build();
+
+            start(OracleConnector.class, config);
+            assertConnectorIsRunning();
+
+            waitForStreamingRunning(TestHelper.CONNECTOR_NAME, TestHelper.SERVER_NAME);
+
+            connection.executeWithoutCommitting("INSERT INTO dbz4366 (id,data,data2) values (1,EMPTY_BLOB(),EMPTY_BLOB())");
+            final String fillQuery = "DECLARE\n" +
+                    "  loc BLOB;\n" +
+                    "  loc2 BLOB;\n" +
+                    "  i PLS_INTEGER;\n" +
+                    "BEGIN\n" +
+                    "  FOR i IN 1..1024 LOOP\n" +
+                    "    SELECT data into loc FROM dbz4366 WHERE id = 1 FOR UPDATE;\n" +
+                    "    DBMS_LOB.OPEN(loc, DBMS_LOB.LOB_READWRITE);\n" +
+                    "    DBMS_LOB.WRITEAPPEND(loc, 1024, ?);\n" +
+                    "    DBMS_LOB.CLOSE(loc);\n" +
+                    "    \n" +
+                    "    SELECT data2 into loc2 FROM dbz4366 WHERE id = 1 FOR UPDATE;\n" +
+                    "    DBMS_LOB.OPEN(loc2, DBMS_LOB.LOB_READWRITE);\n" +
+                    "    DBMS_LOB.WRITEAPPEND(loc2, 1024, ?);\n" +
+                    "    DBMS_LOB.CLOSE(loc2);\n" +
+                    "  END LOOP;\n" +
+                    "END;";
+            connection.prepareQuery(fillQuery, ps -> {
+                ps.setBytes(1, part(BIN_DATA, 0, 1024));
+                ps.setBytes(2, part(BIN_DATA, 0, 1024));
+            }, null);
+            connection.execute("COMMIT");
+
+            SourceRecords records = consumeRecordsByTopic(1);
+            assertThat(records.recordsForTopic(topicName("DBZ4366"))).hasSize(1);
+
+            SourceRecord record = records.recordsForTopic(topicName("DBZ4366")).get(0);
+            Struct after = ((Struct) record.value()).getStruct(Envelope.FieldName.AFTER);
+            assertThat(after.get("ID")).isEqualTo(1);
+            ByteBuffer data = (ByteBuffer) after.get("DATA");
+            assertThat(data.array().length).isEqualTo(1024 * 1024);
+            ByteBuffer data2 = (ByteBuffer) after.get("DATA2");
+            assertThat(data2.array().length).isEqualTo(1024 * 1024);
+
+            // As a sanity check, there should be no more records.
+            assertNoRecordsToConsume();
+        }
+        finally {
+            TestHelper.dropTable(connection, "dbz4366");
+        }
+    }
+
+    @Test
+    @FixFor("DBZ-4366")
+    @SkipWhenAdapterNameIsNot(value = SkipWhenAdapterNameIsNot.AdapterName.LOGMINER, reason = "Xstream marks chunks as end of rows")
+    public void shouldStreamBlobsWrittenInInterleavedChunkedMode2() throws Exception {
+        TestHelper.dropTable(connection, "dbz4366");
+        try {
+            connection.execute("CREATE TABLE dbz4366 (id numeric(9,0), data blob not null, data2 blob not null, primary key(id))");
+            TestHelper.streamTable(connection, "dbz4366");
+
+            Configuration config = TestHelper.defaultConfig()
+                    .with(OracleConnectorConfig.TABLE_INCLUDE_LIST, "DEBEZIUM\\.DBZ4366")
+                    .with(OracleConnectorConfig.LOB_ENABLED, true)
+                    .build();
+
+            start(OracleConnector.class, config);
+            assertConnectorIsRunning();
+
+            waitForStreamingRunning(TestHelper.CONNECTOR_NAME, TestHelper.SERVER_NAME);
+
+            connection.executeWithoutCommitting("INSERT INTO dbz4366 (id,data,data2) values (1,EMPTY_BLOB(),EMPTY_BLOB())");
+            final String fillQuery = "DECLARE\n" +
+                    "  loc BLOB;\n" +
+                    "  loc2 BLOB;\n" +
+                    "  i PLS_INTEGER;\n" +
+                    "BEGIN\n" +
+                    "  SELECT data into loc FROM dbz4366 WHERE id = 1 FOR UPDATE;\n" +
+                    "  DBMS_LOB.OPEN(loc, DBMS_LOB.LOB_READWRITE);\n" +
+                    "  SELECT data2 into loc2 FROM dbz4366 WHERE id = 1 FOR UPDATE;\n" +
+                    "  DBMS_LOB.OPEN(loc2, DBMS_LOB.LOB_READWRITE);\n" +
+                    "  FOR i IN 1..1024 LOOP\n" +
+                    "    DBMS_LOB.WRITEAPPEND(loc, 1024, ?);\n" +
+                    "    DBMS_LOB.WRITEAPPEND(loc2, 1024, ?);\n" +
+                    "  END LOOP;\n" +
+                    "  DBMS_LOB.CLOSE(loc);\n" +
+                    "  DBMS_LOB.CLOSE(loc2);\n" +
+                    "END;";
+            connection.prepareQuery(fillQuery, ps -> {
+                ps.setBytes(1, part(BIN_DATA, 0, 1024));
+                ps.setBytes(2, part(BIN_DATA, 0, 1024));
+            }, null);
+            connection.execute("COMMIT");
+
+            SourceRecords records = consumeRecordsByTopic(1);
+            assertThat(records.recordsForTopic(topicName("DBZ4366"))).hasSize(1);
+
+            SourceRecord record = records.recordsForTopic(topicName("DBZ4366")).get(0);
+            Struct after = ((Struct) record.value()).getStruct(Envelope.FieldName.AFTER);
+            assertThat(after.get("ID")).isEqualTo(1);
+            ByteBuffer data = (ByteBuffer) after.get("DATA");
+            assertThat(data.array().length).isEqualTo(1024 * 1024);
+            ByteBuffer data2 = (ByteBuffer) after.get("DATA2");
+            assertThat(data2.array().length).isEqualTo(1024 * 1024);
+
+            // As a sanity check, there should be no more records.
+            assertNoRecordsToConsume();
+        }
+        finally {
+            TestHelper.dropTable(connection, "dbz4366");
+        }
+    }
+
+    @Test
+    @FixFor("DBZ-4366")
+    @SkipWhenAdapterNameIsNot(value = SkipWhenAdapterNameIsNot.AdapterName.LOGMINER, reason = "Xstream marks chunks as end of rows")
+    public void shouldStreamBlobsWrittenInInterleavedChunkedMode3() throws Exception {
+        TestHelper.dropTable(connection, "dbz4366");
+        try {
+            connection.execute("CREATE TABLE dbz4366 (id numeric(9,0), data blob not null, primary key(id))");
+            TestHelper.streamTable(connection, "dbz4366");
+
+            Configuration config = TestHelper.defaultConfig()
+                    .with(OracleConnectorConfig.TABLE_INCLUDE_LIST, "DEBEZIUM\\.DBZ4366")
+                    .with(OracleConnectorConfig.LOB_ENABLED, true)
+                    .build();
+
+            start(OracleConnector.class, config);
+            assertConnectorIsRunning();
+
+            waitForStreamingRunning(TestHelper.CONNECTOR_NAME, TestHelper.SERVER_NAME);
+
+            connection.executeWithoutCommitting("INSERT INTO dbz4366 (id,data) values (1,EMPTY_BLOB())");
+            connection.executeWithoutCommitting("INSERT INTO dbz4366 (id,data) values (2,EMPTY_BLOB())");
+            final String fillQuery = "DECLARE\n" +
+                    "  loc BLOB;\n" +
+                    "  loc2 BLOB;\n" +
+                    "  i PLS_INTEGER;\n" +
+                    "BEGIN\n" +
+                    "  SELECT data into loc FROM dbz4366 WHERE id = 1 FOR UPDATE;\n" +
+                    "  DBMS_LOB.OPEN(loc, DBMS_LOB.LOB_READWRITE);\n" +
+                    "  SELECT data into loc2 FROM dbz4366 WHERE id = 2 FOR UPDATE;\n" +
+                    "  DBMS_LOB.OPEN(loc2, DBMS_LOB.LOB_READWRITE);\n" +
+                    "  FOR i IN 1..1024 LOOP\n" +
+                    "    DBMS_LOB.WRITEAPPEND(loc, 1024, ?);\n" +
+                    "    DBMS_LOB.WRITEAPPEND(loc2, 1024, ?);\n" +
+                    "  END LOOP;\n" +
+                    "  DBMS_LOB.CLOSE(loc);\n" +
+                    "  DBMS_LOB.CLOSE(loc2);\n" +
+                    "END;";
+            connection.prepareQuery(fillQuery, ps -> {
+                ps.setBytes(1, part(BIN_DATA, 0, 1024));
+                ps.setBytes(2, part(BIN_DATA, 0, 1024));
+            }, null);
+            connection.execute("COMMIT");
+
+            SourceRecords records = consumeRecordsByTopic(2);
+            assertThat(records.recordsForTopic(topicName("DBZ4366"))).hasSize(2);
+
+            SourceRecord record = records.recordsForTopic(topicName("DBZ4366")).get(0);
+            Struct after = ((Struct) record.value()).getStruct(Envelope.FieldName.AFTER);
+            assertThat(after.get("ID")).isEqualTo(1);
+            ByteBuffer data = (ByteBuffer) after.get("DATA");
+            assertThat(data.array().length).isEqualTo(1024 * 1024);
+
+            record = records.recordsForTopic(topicName("DBZ4366")).get(1);
+            after = ((Struct) record.value()).getStruct(Envelope.FieldName.AFTER);
+            assertThat(after.get("ID")).isEqualTo(2);
+            data = (ByteBuffer) after.get("DATA");
+            assertThat(data.array().length).isEqualTo(1024 * 1024);
+
+            // As a sanity check, there should be no more records.
+            assertNoRecordsToConsume();
+        }
+        finally {
+            TestHelper.dropTable(connection, "dbz4366");
         }
     }
 

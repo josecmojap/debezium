@@ -34,6 +34,7 @@ import io.debezium.relational.Selectors.TableIdToStringMapper;
 import io.debezium.relational.Tables.ColumnNameFilter;
 import io.debezium.relational.Tables.ColumnNameFilterFactory;
 import io.debezium.relational.Tables.TableFilter;
+import io.debezium.relational.history.DatabaseHistory;
 
 /**
  * Configuration options shared across the relational CDC connectors.
@@ -573,6 +574,7 @@ public abstract class RelationalDatabaseConnectorConfig extends CommonConnectorC
     public static final Field UNAVAILABLE_VALUE_PLACEHOLDER = Field.create("unavailable.value.placeholder")
             .withDisplayName("Unavailable value placeholder")
             .withType(Type.STRING)
+            .withGroup(Field.createGroupEntry(Field.Group.CONNECTOR_ADVANCED, 20))
             .withWidth(Width.MEDIUM)
             .withDefault(DEFAULT_UNAVAILABLE_VALUE_PLACEHOLDER)
             .withImportance(Importance.MEDIUM)
@@ -618,7 +620,7 @@ public abstract class RelationalDatabaseConnectorConfig extends CommonConnectorC
     private final TemporalPrecisionMode temporalPrecisionMode;
     private final KeyMapper keyMapper;
     private final TableIdToStringMapper tableIdMapper;
-    private final Configuration jdbcConfig;
+    private final JdbcConfiguration jdbcConfig;
     private final String heartbeatActionQuery;
 
     protected RelationalDatabaseConnectorConfig(Configuration config, String logicalName, TableFilter systemTablesFilter,
@@ -629,7 +631,11 @@ public abstract class RelationalDatabaseConnectorConfig extends CommonConnectorC
         this.temporalPrecisionMode = TemporalPrecisionMode.parse(config.getString(TIME_PRECISION_MODE));
         this.keyMapper = CustomKeyMapper.getInstance(config.getString(MSG_KEY_COLUMNS), tableIdMapper);
         this.tableIdMapper = tableIdMapper;
-        this.jdbcConfig = config.subset(DATABASE_CONFIG_PREFIX, true);
+
+        this.jdbcConfig = JdbcConfiguration.adapt(
+                config.filter(x -> !x.startsWith(DatabaseHistory.CONFIGURATION_FIELD_PREFIX_STRING)
+                        || x.equals(HistorizedRelationalDatabaseConnectorConfig.DATABASE_HISTORY.name()))
+                        .subset(DATABASE_CONFIG_PREFIX, true));
 
         if (systemTablesFilter != null && tableIdMapper != null) {
             this.tableFilters = new RelationalTableFilters(config, systemTablesFilter, tableIdMapper);
@@ -683,7 +689,7 @@ public abstract class RelationalDatabaseConnectorConfig extends CommonConnectorC
      * settings, without the "database." prefix. Typically used for passing through
      * driver settings.
      */
-    public Configuration getJdbcConfig() {
+    public JdbcConfiguration getJdbcConfig() {
         return jdbcConfig;
     }
 

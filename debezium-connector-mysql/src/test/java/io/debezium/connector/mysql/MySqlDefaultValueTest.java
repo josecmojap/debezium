@@ -57,7 +57,7 @@ public class MySqlDefaultValueTest {
         tableSchemaBuilder = new TableSchemaBuilder(
                 converters,
                 new MySqlDefaultValueConverter(converters),
-                SchemaNameAdjuster.create(), new CustomConverterRegistry(null), SchemaBuilder.struct().build(), false, false);
+                SchemaNameAdjuster.NO_OP, new CustomConverterRegistry(null), SchemaBuilder.struct().build(), false, false);
 
     }
 
@@ -195,7 +195,7 @@ public class MySqlDefaultValueTest {
         final TableSchemaBuilder tableSchemaBuilder = new TableSchemaBuilder(
                 converters,
                 new MySqlDefaultValueConverter(converters),
-                SchemaNameAdjuster.create(), new CustomConverterRegistry(null), SchemaBuilder.struct().build(), false, false);
+                SchemaNameAdjuster.NO_OP, new CustomConverterRegistry(null), SchemaBuilder.struct().build(), false, false);
 
         String sql = "CREATE TABLE UNSIGNED_BIGINT_TABLE (\n" +
                 "  A BIGINT UNSIGNED NULL DEFAULT 0,\n" +
@@ -352,7 +352,7 @@ public class MySqlDefaultValueTest {
         final TableSchemaBuilder tableSchemaBuilder = new TableSchemaBuilder(
                 converters,
                 new MySqlDefaultValueConverter(converters),
-                SchemaNameAdjuster.create(), new CustomConverterRegistry(null), SchemaBuilder.struct().build(), false, false);
+                SchemaNameAdjuster.NO_OP, new CustomConverterRegistry(null), SchemaBuilder.struct().build(), false, false);
         String sql = "CREATE TABLE NUMERIC_DECIMAL_TABLE (\n" +
                 "  A NUMERIC NOT NULL DEFAULT 1.23,\n" +
                 "  B DECIMAL(5,3) NOT NULL DEFAULT 2.321,\n" +
@@ -527,6 +527,45 @@ public class MySqlDefaultValueTest {
         assertThat(Byte.toUnsignedInt((defVal[0]))).isEqualTo(0b00001110);
         assertThat(Byte.toUnsignedInt((defVal[1]))).isEqualTo(0b11111011);
         assertThat(Byte.toUnsignedInt((defVal[2]))).isEqualTo(0b11111111);
+    }
+
+    @Test
+    @FixFor("DBZ-3541")
+    public void shouldRoundIntExpressedAsDecimal() {
+        String ddl = "CREATE TABLE int_as_decimal (col1 INT DEFAULT '0.0', col2 INT DEFAULT '1.5')";
+
+        parser.parse(ddl, tables);
+
+        Table table = tables.forTable(new TableId(null, null, "int_as_decimal"));
+
+        assertThat(getColumnSchema(table, "col1").defaultValue()).isEqualTo(0);
+        assertThat(getColumnSchema(table, "col2").defaultValue()).isEqualTo(2);
+    }
+
+    @Test
+    @FixFor("DBZ-3541")
+    public void shouldParseScientificNotation() {
+        String ddl = "CREATE TABLE int_as_e (col1 INT DEFAULT 1E1, col2 INT DEFAULT 15E-1)";
+
+        parser.parse(ddl, tables);
+
+        Table table = tables.forTable(new TableId(null, null, "int_as_e"));
+
+        assertThat(getColumnSchema(table, "col1").defaultValue()).isEqualTo(10);
+        assertThat(getColumnSchema(table, "col2").defaultValue()).isEqualTo(2);
+    }
+
+    @Test
+    @FixFor("DBZ-3541")
+    public void shouldParseStringScientificNotation() {
+        String ddl = "CREATE TABLE int_as_e (col1 INT DEFAULT 1E1, col2 INT DEFAULT '15E-1')";
+
+        parser.parse(ddl, tables);
+
+        Table table = tables.forTable(new TableId(null, null, "int_as_e"));
+
+        assertThat(getColumnSchema(table, "col1").defaultValue()).isEqualTo(10);
+        assertThat(getColumnSchema(table, "col2").defaultValue()).isEqualTo(2);
     }
 
     @Test

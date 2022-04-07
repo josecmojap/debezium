@@ -12,7 +12,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
+import org.awaitility.Awaitility;
 import org.infinispan.client.hotrod.impl.ConfigurationProperties;
 
 import io.debezium.config.Configuration;
@@ -170,7 +172,7 @@ public class TestHelper {
     public static OracleConnection defaultConnection() {
         Configuration config = defaultConfig().build();
         Configuration jdbcConfig = config.subset(DATABASE_PREFIX, true);
-        return createConnection(config, jdbcConfig, true);
+        return createConnection(config, JdbcConfiguration.adapt(jdbcConfig), true);
     }
 
     /**
@@ -255,7 +257,7 @@ public class TestHelper {
     public static OracleConnection testConnection() {
         Configuration config = testConfig().build();
         Configuration jdbcConfig = config.subset(DATABASE_PREFIX, true);
-        return createConnection(config, jdbcConfig, false);
+        return createConnection(config, JdbcConfiguration.adapt(jdbcConfig), false);
     }
 
     /**
@@ -265,7 +267,7 @@ public class TestHelper {
     public static OracleConnection adminConnection() {
         Configuration config = adminConfig().build();
         Configuration jdbcConfig = config.subset(DATABASE_PREFIX, true);
-        return createConnection(config, jdbcConfig, false);
+        return createConnection(config, JdbcConfiguration.adapt(jdbcConfig), false);
     }
 
     /**
@@ -276,7 +278,7 @@ public class TestHelper {
      * @param autoCommit whether the connection should enforce auto-commit
      * @return the connection
      */
-    private static OracleConnection createConnection(Configuration config, Configuration jdbcConfig, boolean autoCommit) {
+    private static OracleConnection createConnection(Configuration config, JdbcConfiguration jdbcConfig, boolean autoCommit) {
         OracleConnection connection = new OracleConnection(jdbcConfig, TestHelper.class::getClassLoader);
         try {
             connection.setAutoCommit(autoCommit);
@@ -297,7 +299,7 @@ public class TestHelper {
         Configuration config = adminConfig().build();
         Configuration jdbcConfig = config.subset(DATABASE_PREFIX, true);
 
-        try (OracleConnection jdbcConnection = new OracleConnection(jdbcConfig, TestHelper.class::getClassLoader)) {
+        try (OracleConnection jdbcConnection = new OracleConnection(JdbcConfiguration.adapt(jdbcConfig), TestHelper.class::getClassLoader)) {
             if ((new OracleConnectorConfig(defaultConfig().build())).getPdbName() != null) {
                 jdbcConnection.resetSessionToCdb();
             }
@@ -312,7 +314,7 @@ public class TestHelper {
         Configuration config = adminConfig().build();
         Configuration jdbcConfig = config.subset(DATABASE_PREFIX, true);
 
-        try (OracleConnection jdbcConnection = new OracleConnection(jdbcConfig, TestHelper.class::getClassLoader)) {
+        try (OracleConnection jdbcConnection = new OracleConnection(JdbcConfiguration.adapt(jdbcConfig), TestHelper.class::getClassLoader)) {
             if ((new OracleConnectorConfig(defaultConfig().build())).getPdbName() != null) {
                 jdbcConnection.resetSessionToCdb();
             }
@@ -509,5 +511,19 @@ public class TestHelper {
             builder.with(field, config);
         }
         return builder;
+    }
+
+    /**
+     * Simulate {@link Thread#sleep(long)} by using {@link Awaitility} instead.
+     *
+     * @param duration the duration to sleep (wait)
+     * @param units the unit of time
+     * @throws Exception if the wait/sleep failed
+     */
+    public static void sleep(long duration, TimeUnit units) throws Exception {
+        // While we wait 1 additional unit more than the requested sleep timer, the poll delay is offset
+        // by exactly the sleep time and the condition always return true and so the extended atMost
+        // value is irrelevant and only used to satisfy Awaitility's need for atMost > pollDelay.
+        Awaitility.await().atMost(duration + 1, units).pollDelay(duration, units).until(() -> true);
     }
 }

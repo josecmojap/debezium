@@ -62,6 +62,10 @@ public class OracleValueConverters extends JdbcValueConverters {
      * Marker value indicating an unavilable column value.
      */
     public static final Object UNAVAILABLE_VALUE = new Object();
+    public static final String EMPTY_BLOB_FUNCTION = "EMPTY_BLOB()";
+    public static final String EMPTY_CLOB_FUNCTION = "EMPTY_CLOB()";
+    public static final String HEXTORAW_FUNCTION_START = "HEXTORAW('";
+    public static final String HEXTORAW_FUNCTION_END = "')";
 
     private static final Pattern INTERVAL_DAY_SECOND_PATTERN = Pattern.compile("([+\\-])?(\\d+) (\\d+):(\\d+):(\\d+).(\\d+)");
 
@@ -99,11 +103,6 @@ public class OracleValueConverters extends JdbcValueConverters {
             .appendOffset("+HH:MM", "")
             .toFormatter();
 
-    private static final String EMPTY_BLOB_FUNCTION = "EMPTY_BLOB()";
-    private static final String EMPTY_CLOB_FUNCTION = "EMPTY_CLOB()";
-    private static final String HEXTORAW_FUNCTION_START = "HEXTORAW('";
-    private static final String HEXTORAW_FUNCTION_END = "')";
-
     private static final Pattern TO_TIMESTAMP = Pattern.compile("TO_TIMESTAMP\\('(.*)'\\)", Pattern.CASE_INSENSITIVE);
     private static final Pattern TO_TIMESTAMP_TZ = Pattern.compile("TO_TIMESTAMP_TZ\\('(.*)'\\)", Pattern.CASE_INSENSITIVE);
     private static final Pattern TO_DATE = Pattern.compile("TO_DATE\\('(.*)',[ ]*'(.*)'\\)", Pattern.CASE_INSENSITIVE);
@@ -116,7 +115,7 @@ public class OracleValueConverters extends JdbcValueConverters {
     private final String unavailableValuePlaceholderString;
 
     public OracleValueConverters(OracleConnectorConfig config, OracleConnection connection) {
-        super(config.getDecimalMode(), config.getTemporalPrecisionMode(), ZoneOffset.UTC, null, null, null);
+        super(config.getDecimalMode(), config.getTemporalPrecisionMode(), ZoneOffset.UTC, null, null, config.binaryHandlingMode());
         this.connection = connection;
         this.lobEnabled = config.isLobEnabled();
         this.intervalHandlingMode = config.getIntervalHandlingMode();
@@ -150,6 +149,8 @@ public class OracleValueConverters extends JdbcValueConverters {
             case OracleTypes.INTERVALDS:
                 return intervalHandlingMode == OracleConnectorConfig.IntervalHandlingMode.STRING ? Interval.builder() : MicroDuration.builder();
             case Types.STRUCT:
+                return SchemaBuilder.string();
+            case OracleTypes.ROWID:
                 return SchemaBuilder.string();
             default: {
                 SchemaBuilder builder = super.schemaBuilder(column);
@@ -205,6 +206,7 @@ public class OracleValueConverters extends JdbcValueConverters {
             case Types.NVARCHAR:
             case Types.STRUCT:
             case Types.CLOB:
+            case OracleTypes.ROWID:
                 return data -> convertString(column, fieldDefn, data);
             case Types.BLOB:
                 return data -> convertBinary(column, fieldDefn, data, binaryMode);
@@ -266,7 +268,10 @@ public class OracleValueConverters extends JdbcValueConverters {
         }
         if (data instanceof Clob) {
             if (!lobEnabled) {
-                return null;
+                if (column.isOptional()) {
+                    return null;
+                }
+                return "";
             }
             try {
                 Clob clob = (Clob) data;
@@ -311,18 +316,19 @@ public class OracleValueConverters extends JdbcValueConverters {
                     data = RAW.hexString2Bytes(getHexToRawHexString(str));
                 }
             }
-            else if (data instanceof BlobChunkList) {
-                if (!lobEnabled) {
-                    return null;
-                }
-                data = convertBlobChunkList((BlobChunkList) data);
-            }
             else if (data instanceof Blob) {
                 if (!lobEnabled) {
-                    return null;
+                    if (column.isOptional()) {
+                        return null;
+                    }
+                    else {
+                        data = NumberConversions.BYTE_ZERO;
+                    }
                 }
-                Blob blob = (Blob) data;
-                data = blob.getBytes(1, Long.valueOf(blob.length()).intValue());
+                else {
+                    Blob blob = (Blob) data;
+                    data = blob.getBytes(1, Long.valueOf(blob.length()).intValue());
+                }
             }
 
             if (data == UNAVAILABLE_VALUE) {
@@ -334,21 +340,6 @@ public class OracleValueConverters extends JdbcValueConverters {
         catch (SQLException e) {
             throw new DebeziumException("Couldn't convert value for column " + column.name(), e);
         }
-    }
-
-    private byte[] convertBlobChunkList(BlobChunkList chunks) throws SQLException {
-        if (chunks.isEmpty()) {
-            // if there are no chunks, simply return null
-            return null;
-        }
-
-        // Iterate each chunk's hex-string and combine them together.
-        final StringBuilder hexString = new StringBuilder();
-        for (String chunk : chunks) {
-            hexString.append(getHexToRawHexString(chunk));
-        }
-
-        return RAW.hexString2Bytes(hexString.toString());
     }
 
     @Override

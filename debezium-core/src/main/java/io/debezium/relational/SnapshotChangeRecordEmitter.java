@@ -15,18 +15,18 @@ import io.debezium.util.Clock;
  *
  * @author Jiri Pechanec
  */
-public class SnapshotChangeRecordEmitter extends RelationalChangeRecordEmitter {
+public class SnapshotChangeRecordEmitter<P extends Partition> extends RelationalChangeRecordEmitter<P> {
 
     private final Object[] row;
 
-    public SnapshotChangeRecordEmitter(Partition partition, OffsetContext offset, Object[] row, Clock clock) {
+    public SnapshotChangeRecordEmitter(P partition, OffsetContext offset, Object[] row, Clock clock) {
         super(partition, offset, clock);
 
         this.row = row;
     }
 
     @Override
-    protected Operation getOperation() {
+    public Operation getOperation() {
         return Operation.READ;
     }
 

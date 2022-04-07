@@ -44,10 +44,15 @@ public class MySqlPartition implements Partition {
         return serverName.hashCode();
     }
 
-    static class Provider implements Partition.Provider<MySqlPartition> {
+    @Override
+    public String toString() {
+        return "MySqlPartition [sourcePartition=" + getSourcePartition() + "]";
+    }
+
+    public static class Provider implements Partition.Provider<MySqlPartition> {
         private final MySqlConnectorConfig connectorConfig;
 
-        Provider(MySqlConnectorConfig connectorConfig) {
+        public Provider(MySqlConnectorConfig connectorConfig) {
             this.connectorConfig = connectorConfig;
         }
 

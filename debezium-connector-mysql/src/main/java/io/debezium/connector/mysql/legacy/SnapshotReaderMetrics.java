@@ -8,21 +8,20 @@ package io.debezium.connector.mysql.legacy;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.debezium.connector.base.ChangeEventQueueMetrics;
-import io.debezium.pipeline.metrics.SnapshotChangeEventSourceMetrics;
+import io.debezium.connector.mysql.MySqlPartition;
+import io.debezium.pipeline.metrics.DefaultSnapshotChangeEventSourceMetrics;
 
 /**
  * @author Randall Hauch
  *
  */
-class SnapshotReaderMetrics extends SnapshotChangeEventSourceMetrics implements SnapshotReaderMetricsMXBean {
+class SnapshotReaderMetrics extends DefaultSnapshotChangeEventSourceMetrics<MySqlPartition>
+        implements SnapshotReaderMetricsMXBean {
 
     private final AtomicBoolean holdingGlobalLock = new AtomicBoolean();
 
-    private final MySqlSchema schema;
-
-    public SnapshotReaderMetrics(MySqlTaskContext taskContext, MySqlSchema schema, ChangeEventQueueMetrics changeEventQueueMetrics) {
+    public SnapshotReaderMetrics(MySqlTaskContext taskContext, ChangeEventQueueMetrics changeEventQueueMetrics) {
         super(taskContext, changeEventQueueMetrics, null);
-        this.schema = schema;
     }
 
     @Override
@@ -36,16 +35,6 @@ class SnapshotReaderMetrics extends SnapshotChangeEventSourceMetrics implements 
 
     public void globalLockReleased() {
         holdingGlobalLock.set(false);
-    }
-
-    @Override
-    public String[] getMonitoredTables() {
-        return schema.capturedTablesAsStringArray();
-    }
-
-    @Override
-    public String[] getCapturedTables() {
-        return schema.capturedTablesAsStringArray();
     }
 
     @Override

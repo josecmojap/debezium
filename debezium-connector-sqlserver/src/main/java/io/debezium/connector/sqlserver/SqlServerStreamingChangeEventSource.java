@@ -77,7 +77,7 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
      */
     private final SqlServerConnection metadataConnection;
 
-    private final EventDispatcher<TableId> dispatcher;
+    private final EventDispatcher<SqlServerPartition, TableId> dispatcher;
     private final ErrorHandler errorHandler;
     private final Clock clock;
     private final SqlServerDatabaseSchema schema;
@@ -88,8 +88,9 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
     private final Map<SqlServerPartition, SqlServerStreamingExecutionContext> streamingExecutionContexts;
 
     public SqlServerStreamingChangeEventSource(SqlServerConnectorConfig connectorConfig, SqlServerConnection dataConnection,
-                                               SqlServerConnection metadataConnection, EventDispatcher<TableId> dispatcher, ErrorHandler errorHandler, Clock clock,
-                                               SqlServerDatabaseSchema schema) {
+                                               SqlServerConnection metadataConnection,
+                                               EventDispatcher<SqlServerPartition, TableId> dispatcher,
+                                               ErrorHandler errorHandler, Clock clock, SqlServerDatabaseSchema schema) {
         this.connectorConfig = connectorConfig;
         this.dataConnection = dataConnection;
         this.metadataConnection = metadataConnection;
@@ -287,6 +288,7 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
 
                             dispatcher
                                     .dispatchDataChangeEvent(
+                                            partition,
                                             tableId,
                                             new SqlServerChangeRecordEmitter(
                                                     partition,
@@ -329,8 +331,13 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
             throws InterruptedException, SQLException {
         final SqlServerChangeTable newTable = schemaChangeCheckpoints.poll();
         LOGGER.info("Migrating schema to {}", newTable);
+        Table oldTableSchema = schema.tableFor(newTable.getSourceTableId());
         Table tableSchema = metadataConnection.getTableSchemaFromTable(partition.getDatabaseName(), newTable);
-        dispatcher.dispatchSchemaChangeEvent(newTable.getSourceTableId(),
+        if (oldTableSchema.equals(tableSchema)) {
+            LOGGER.info("Migration skipped, no table schema changes detected.");
+            return;
+        }
+        dispatcher.dispatchSchemaChangeEvent(partition, newTable.getSourceTableId(),
                 new SqlServerSchemaChangeEventEmitter(partition, offsetContext, newTable, tableSchema,
                         SchemaChangeEventType.ALTER));
         newTable.setSourceTable(tableSchema);
@@ -401,6 +408,7 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
                         currentTable.getSourceTableId(),
                         Instant.now());
                 dispatcher.dispatchSchemaChangeEvent(
+                        partition,
                         currentTable.getSourceTableId(),
                         new SqlServerSchemaChangeEventEmitter(
                                 partition,

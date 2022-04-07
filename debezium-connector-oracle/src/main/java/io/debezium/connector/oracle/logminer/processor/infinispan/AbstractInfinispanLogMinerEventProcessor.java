@@ -46,12 +46,12 @@ public abstract class AbstractInfinispanLogMinerEventProcessor extends AbstractL
     private final OracleStreamingChangeEventSourceMetrics metrics;
     private final OraclePartition partition;
     private final OracleOffsetContext offsetContext;
-    private final EventDispatcher<TableId> dispatcher;
+    private final EventDispatcher<OraclePartition, TableId> dispatcher;
 
     public AbstractInfinispanLogMinerEventProcessor(ChangeEventSourceContext context,
                                                     OracleConnectorConfig connectorConfig,
                                                     OracleConnection jdbcConnection,
-                                                    EventDispatcher<TableId> dispatcher,
+                                                    EventDispatcher<OraclePartition, TableId> dispatcher,
                                                     OraclePartition partition,
                                                     OracleOffsetContext offsetContext,
                                                     OracleDatabaseSchema schema,
@@ -105,17 +105,17 @@ public abstract class AbstractInfinispanLogMinerEventProcessor extends AbstractL
     }
 
     @Override
-    protected void processRow(LogMinerEventRow row) throws SQLException, InterruptedException {
+    protected void processRow(OraclePartition partition, LogMinerEventRow row) throws SQLException, InterruptedException {
         final String transactionId = row.getTransactionId();
         if (isRecentlyProcessed(transactionId)) {
             LOGGER.trace("Transaction {} has been seen by connector, skipped.", transactionId);
             return;
         }
-        super.processRow(row);
+        super.processRow(partition, row);
     }
 
     @Override
-    public void abandonTransactions(Duration retention) {
+    public void abandonTransactions(Duration retention) throws InterruptedException {
         // no-op, transactions are never abandoned
     }
 

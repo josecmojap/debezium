@@ -22,18 +22,18 @@ import io.debezium.util.Clock;
 /**
  * @author Chris Cranford
  */
-public class OracleSignalBasedIncrementalSnapshotChangeEventSource extends SignalBasedIncrementalSnapshotChangeEventSource<TableId> {
+public class OracleSignalBasedIncrementalSnapshotChangeEventSource extends SignalBasedIncrementalSnapshotChangeEventSource<OraclePartition, TableId> {
 
     private final String pdbName;
     private final OracleConnection connection;
 
     public OracleSignalBasedIncrementalSnapshotChangeEventSource(RelationalDatabaseConnectorConfig config,
                                                                  JdbcConnection jdbcConnection,
-                                                                 EventDispatcher<TableId> dispatcher,
+                                                                 EventDispatcher<OraclePartition, TableId> dispatcher,
                                                                  DatabaseSchema<?> databaseSchema,
                                                                  Clock clock,
-                                                                 SnapshotProgressListener progressListener,
-                                                                 DataChangeEventListener dataChangeEventListener) {
+                                                                 SnapshotProgressListener<OraclePartition> progressListener,
+                                                                 DataChangeEventListener<OraclePartition> dataChangeEventListener) {
         super(config, jdbcConnection, dispatcher, databaseSchema, clock, progressListener, dataChangeEventListener);
         this.pdbName = ((OracleConnectorConfig) config).getPdbName();
         this.connection = (OracleConnection) jdbcConnection;
@@ -41,7 +41,7 @@ public class OracleSignalBasedIncrementalSnapshotChangeEventSource extends Signa
 
     @Override
     protected String getSignalTableName(String dataCollectionId) {
-        final TableId tableId = TableId.parse(dataCollectionId);
+        final TableId tableId = OracleTableIdParser.parse(dataCollectionId);
         return tableId.schema() + "." + tableId.table();
     }
 

@@ -141,14 +141,15 @@ createEvent
 createIndex
     : CREATE (OR REPLACE)?                                        // OR is MariaDB-specific only
       intimeAction=(ONLINE | OFFLINE)?
-      indexCategory=(UNIQUE | FULLTEXT | SPATIAL)?
-      INDEX uid indexType?
+      indexCategory=(UNIQUE | FULLTEXT | SPATIAL)? INDEX
+      (IF NOT EXISTS)?                                            // MariaDB-specific only
+      uid indexType?
       ON tableName indexColumnNames
+      (WAIT decimalLiteral | NOWAIT)?                             // MariaDB-specific only
       indexOption*
       (
-        ALGORITHM '='? algType=(DEFAULT | INPLACE | COPY)
-        | LOCK '='?
-          lockType=(DEFAULT | NONE | SHARED | EXCLUSIVE)
+        ALGORITHM EQUAL_SYMBOL? algType=(DEFAULT | INPLACE | COPY | NOCOPY | INSTANT)  // NOCOPY, INSTANT are MariaDB-specific only
+        | LOCK EQUAL_SYMBOL? lockType=(DEFAULT | NONE | SHARED | EXCLUSIVE)
       )*
     ;
 
@@ -231,7 +232,7 @@ createTablespaceNdb
     ;
 
 createTrigger
-    : CREATE ownerStatement?
+    : CREATE (OR REPLACE)? ownerStatement?  // OR is MariaDB-specific only
       TRIGGER thisTrigger=fullId
       triggerTime=(BEFORE | AFTER)
       triggerEvent=(INSERT | UPDATE | DELETE)
@@ -254,7 +255,7 @@ createView
 // details
 
 createDatabaseOption
-    : DEFAULT? (CHARACTER SET | CHARSET) '='? (charsetName | DEFAULT)
+    : DEFAULT? (CHARACTER SET | CHARSET | CHAR SET) '='? (charsetName | DEFAULT)
     | DEFAULT? COLLATE '='? collationName
     ;
 
@@ -299,16 +300,19 @@ enableType
     ;
 
 indexType
-    : USING (BTREE | HASH)
+    : USING (BTREE | HASH | RTREE)  // RTREE is MariaDB-specific only
     ;
 
 indexOption
-    : KEY_BLOCK_SIZE '='? fileSizeLiteral
+    : KEY_BLOCK_SIZE EQUAL_SYMBOL? fileSizeLiteral
     | indexType
     | WITH PARSER uid
     | COMMENT STRING_LITERAL
-    | INVISIBLE
-    | VISIBLE
+    | (VISIBLE | INVISIBLE)
+    | ENGINE_ATTRIBUTE EQUAL_SYMBOL? STRING_LITERAL
+    | SECONDARY_ENGINE_ATTRIBUTE EQUAL_SYMBOL? STRING_LITERAL
+    | CLUSTERING EQUAL_SYMBOL (YES | NO)                       // MariaDB-specific only
+    | (IGNORED | NOT IGNORED)                                  // MariaDB-specific only
     ;
 
 procedureParameter
@@ -416,38 +420,42 @@ indexColumnDefinition
     ;
 
 tableOption
-    : ENGINE '='? engineName?                                       #tableOptionEngine
-    | AUTO_INCREMENT '='? decimalLiteral                            #tableOptionAutoIncrement
-    | AVG_ROW_LENGTH '='? decimalLiteral                            #tableOptionAverage
-    | DEFAULT? (CHARACTER SET | CHARSET) '='? (charsetName|DEFAULT) #tableOptionCharset
-    | (CHECKSUM | PAGE_CHECKSUM) '='? boolValue=('0' | '1')         #tableOptionChecksum
-    | DEFAULT? COLLATE '='? collationName                           #tableOptionCollate
-    | COMMENT '='? STRING_LITERAL                                   #tableOptionComment
-    | COMPRESSION '='? (STRING_LITERAL | ID)                        #tableOptionCompression
-    | CONNECTION '='? STRING_LITERAL                                #tableOptionConnection
-    | DATA DIRECTORY '='? STRING_LITERAL                            #tableOptionDataDirectory
-    | DELAY_KEY_WRITE '='? boolValue=('0' | '1')                    #tableOptionDelay
-    | ENCRYPTION '='? STRING_LITERAL                                #tableOptionEncryption
-    | INDEX DIRECTORY '='? STRING_LITERAL                           #tableOptionIndexDirectory
-    | INSERT_METHOD '='? insertMethod=(NO | FIRST | LAST)           #tableOptionInsertMethod
-    | KEY_BLOCK_SIZE '='? fileSizeLiteral                           #tableOptionKeyBlockSize
-    | MAX_ROWS '='? decimalLiteral                                  #tableOptionMaxRows
-    | MIN_ROWS '='? decimalLiteral                                  #tableOptionMinRows
-    | PACK_KEYS '='? extBoolValue=('0' | '1' | DEFAULT)             #tableOptionPackKeys
-    | PASSWORD '='? STRING_LITERAL                                  #tableOptionPassword
+    : ENGINE '='? engineName?                                                       #tableOptionEngine
+    | AUTO_INCREMENT '='? decimalLiteral                                            #tableOptionAutoIncrement
+    | AVG_ROW_LENGTH '='? decimalLiteral                                            #tableOptionAverage
+    | DEFAULT? (CHARACTER SET | CHARSET | CHAR SET) '='? (charsetName|DEFAULT)      #tableOptionCharset
+    | (CHECKSUM | PAGE_CHECKSUM) '='? boolValue=('0' | '1')                         #tableOptionChecksum
+    | DEFAULT? COLLATE '='? collationName                                           #tableOptionCollate
+    | COMMENT '='? STRING_LITERAL                                                   #tableOptionComment
+    | COMPRESSION '='? (STRING_LITERAL | ID)                                        #tableOptionCompression
+    | CONNECTION '='? STRING_LITERAL                                                #tableOptionConnection
+    | DATA DIRECTORY '='? STRING_LITERAL                                            #tableOptionDataDirectory
+    | DELAY_KEY_WRITE '='? boolValue=('0' | '1')                                    #tableOptionDelay
+    | ENCRYPTION '='? STRING_LITERAL                                                #tableOptionEncryption
+    | encryptedLiteral '='? (YES | NO)                                              #tableOptionEncrypted
+    | (PAGE_COMPRESSED | STRING_LITERAL) '='? ('0' | '1')                           #tableOptionPageCompressed
+    | (PAGE_COMPRESSION_LEVEL | STRING_LITERAL) '='? decimalLiteral                 #tableOptionPageCompressionLevel
+    | ENCRYPTION_KEY_ID '='? decimalLiteral                                         #tableOptionEncryptionKeyId
+    | INDEX DIRECTORY '='? STRING_LITERAL                                           #tableOptionIndexDirectory
+    | INSERT_METHOD '='? insertMethod=(NO | FIRST | LAST)                           #tableOptionInsertMethod
+    | KEY_BLOCK_SIZE '='? fileSizeLiteral                                           #tableOptionKeyBlockSize
+    | MAX_ROWS '='? decimalLiteral                                                  #tableOptionMaxRows
+    | MIN_ROWS '='? decimalLiteral                                                  #tableOptionMinRows
+    | PACK_KEYS '='? extBoolValue=('0' | '1' | DEFAULT)                             #tableOptionPackKeys
+    | PASSWORD '='? STRING_LITERAL                                                  #tableOptionPassword
     | ROW_FORMAT '='?
         rowFormat=(
           DEFAULT | DYNAMIC | FIXED | COMPRESSED
           | REDUNDANT | COMPACT | ID
-        )                                                           #tableOptionRowFormat
-    | STATS_AUTO_RECALC '='? extBoolValue=(DEFAULT | '0' | '1')     #tableOptionRecalculation
-    | STATS_PERSISTENT '='? extBoolValue=(DEFAULT | '0' | '1')      #tableOptionPersistent
-    | STATS_SAMPLE_PAGES '='? decimalLiteral                        #tableOptionSamplePage
-    | TABLESPACE uid tablespaceStorage?                             #tableOptionTablespace
-    | TABLE_TYPE '=' tableType                                      #tableOptionTableType
-    | tablespaceStorage                                             #tableOptionTablespace
-    | TRANSACTIONAL '='? ('0' | '1')                                #tableOptionTransactional
-    | UNION '='? '(' tables ')'                                     #tableOptionUnion
+        )                                                                           #tableOptionRowFormat
+    | STATS_AUTO_RECALC '='? extBoolValue=(DEFAULT | '0' | '1')                     #tableOptionRecalculation
+    | STATS_PERSISTENT '='? extBoolValue=(DEFAULT | '0' | '1')                      #tableOptionPersistent
+    | STATS_SAMPLE_PAGES '='? decimalLiteral                                        #tableOptionSamplePage
+    | TABLESPACE uid tablespaceStorage?                                             #tableOptionTablespace
+    | TABLE_TYPE '=' tableType                                                      #tableOptionTableType
+    | tablespaceStorage                                                             #tableOptionTablespace
+    | TRANSACTIONAL '='? ('0' | '1')                                                #tableOptionTransactional
+    | UNION '='? '(' tables ')'                                                     #tableOptionUnion
     ;
 
 tableType
@@ -1658,7 +1666,7 @@ renameUserClause
 
 analyzeTable
     : ANALYZE actionOption=(NO_WRITE_TO_BINLOG | LOCAL)?
-       TABLE tables
+       (TABLE | TABLES) tables
        ( UPDATE HISTOGRAM ON fullColumnName (',' fullColumnName)* (WITH decimalLiteral BUCKETS)? )?
        ( DROP HISTOGRAM ON fullColumnName (',' fullColumnName)* )?
     ;
@@ -1709,16 +1717,16 @@ uninstallPlugin
 //    Set and show statements
 
 setStatement
-    : SET variableClause ('=' | ':=') expression
-      (',' variableClause ('=' | ':=') expression)*                 #setVariable
-    | SET (CHARACTER SET | CHARSET) (charsetName | DEFAULT)         #setCharset
+    : SET variableClause ('=' | ':=') (expression | ON)
+      (',' variableClause ('=' | ':=') (expression | ON))*                      #setVariable
+    | SET (CHARACTER SET | CHARSET | CHAR SET) (charsetName | DEFAULT)          #setCharset
     | SET NAMES
-        (charsetName (COLLATE collationName)? | DEFAULT)            #setNames
-    | setPasswordStatement                                          #setPassword
-    | setTransactionStatement                                       #setTransaction
-    | setAutocommitStatement                                        #setAutocommit
+        (charsetName (COLLATE collationName)? | DEFAULT)                        #setNames
+    | setPasswordStatement                                                      #setPassword
+    | setTransactionStatement                                                   #setTransaction
+    | setAutocommitStatement                                                    #setAutocommit
     | SET fullId ('=' | ':=') expression
-      (',' fullId ('=' | ':=') expression)*                         #setNewValueInsideTrigger
+      (',' fullId ('=' | ':=') expression)*                                     #setNewValueInsideTrigger
     ;
 
 showStatement
@@ -1749,7 +1757,7 @@ showStatement
         (LIMIT
           (offset=decimalLiteral ',')?
           rowCount=decimalLiteral
-        )                                                           #showErrors
+        )?                                                          #showErrors
     | SHOW COUNT '(' '*' ')' errorFormat=(ERRORS | WARNINGS)        #showCountErrors
     | SHOW showSchemaEntity
         (schemaFormat=(FROM | IN) uid)? showFilter?                 #showSchemaFilter
@@ -1855,8 +1863,8 @@ flushOption
         | USER_RESOURCES | TABLES (WITH READ LOCK)?
        )                                                            #simpleFlushOption
     | RELAY LOGS channelOption?                                     #channelFlushOption
-    | TABLES tables flushTableOption?                               #tableFlushOption
-    | TABLE tables flushTableOption?                                #tableFlushOption
+    | TABLES tables? flushTableOption?                              #tableFlushOption
+    | TABLE tables? flushTableOption?                               #tableFlushOption
     ;
 
 flushTableOption
@@ -2010,6 +2018,12 @@ engineName
     | CONNECT
     ;
 
+// MariaDB
+encryptedLiteral
+    : ENCRYPTED
+    | STRING_LITERAL
+    ;
+
 uuidSet
     : decimalLiteral '-' decimalLiteral '-' decimalLiteral
       '-' decimalLiteral '-' decimalLiteral
@@ -2107,7 +2121,7 @@ dataType
       )
       VARYING?
       lengthOneDimension? BINARY?
-      ((CHARACTER SET | CHARSET) charsetName)?
+      ((CHARACTER SET | CHARSET | CHAR SET) charsetName)?
       (COLLATE collationName | BINARY)?                             #stringDataType
     | NATIONAL typeName=(VARCHAR | CHARACTER)
       lengthOneDimension? BINARY?                                   #nationalStringDataType
@@ -2119,13 +2133,13 @@ dataType
         TINYINT | SMALLINT | MEDIUMINT | INT | INTEGER | BIGINT
         | MIDDLEINT | INT1 | INT2 | INT3 | INT4 | INT8
       )
-      lengthOneDimension? (SIGNED | UNSIGNED)? ZEROFILL?            #dimensionDataType
+      lengthOneDimension? (SIGNED | UNSIGNED | ZEROFILL)*           #dimensionDataType
     | typeName=REAL
-      lengthTwoDimension? (SIGNED | UNSIGNED)? ZEROFILL?            #dimensionDataType
+      lengthTwoDimension? (SIGNED | UNSIGNED | ZEROFILL)*           #dimensionDataType
     | typeName=DOUBLE PRECISION?
-          lengthTwoDimension? (SIGNED | UNSIGNED)? ZEROFILL?            #dimensionDataType
+      lengthTwoDimension? (SIGNED | UNSIGNED | ZEROFILL)*           #dimensionDataType
     | typeName=(DECIMAL | DEC | FIXED | NUMERIC | FLOAT | FLOAT4 | FLOAT8)
-      lengthTwoOptionalDimension? (SIGNED | UNSIGNED)? ZEROFILL?    #dimensionDataType
+      lengthTwoOptionalDimension? (SIGNED | UNSIGNED | ZEROFILL)*   #dimensionDataType
     | typeName=(
         DATE | TINYBLOB |  MEDIUMBLOB | LONGBLOB
         | BOOL | BOOLEAN | SERIAL
@@ -2137,14 +2151,14 @@ dataType
       lengthOneDimension?                                           #dimensionDataType
     | typeName=(ENUM | SET)
       collectionOptions BINARY?
-      ((CHARACTER SET | CHARSET) charsetName)?                      #collectionDataType
+      ((CHARACTER SET | CHARSET | CHAR SET) charsetName)?           #collectionDataType
     | typeName=(
         GEOMETRYCOLLECTION | GEOMCOLLECTION | LINESTRING | MULTILINESTRING
         | MULTIPOINT | MULTIPOLYGON | POINT | POLYGON | JSON | GEOMETRY
       )                                                             #spatialDataType
     | typeName=LONG VARCHAR?
       BINARY?
-      ((CHARACTER SET | CHARSET) charsetName)?
+      ((CHARACTER SET | CHARSET | CHAR SET) charsetName)?
       (COLLATE collationName)?                                      #longVarcharDataType    // LONG VARCHAR is the same as LONG
     | LONG VARBINARY                                                #longVarbinaryDataType
     ;
@@ -2161,11 +2175,11 @@ convertedDataType
     :
     (
       typeName=(BINARY| NCHAR) lengthOneDimension?
-      | typeName=CHAR lengthOneDimension? ((CHARACTER SET | CHARSET) charsetName)?
+      | typeName=CHAR lengthOneDimension? ((CHARACTER SET | CHARSET | CHAR SET) charsetName)?
       | typeName=(DATE | DATETIME | TIME | JSON | INT | INTEGER)
       | typeName=DECIMAL lengthTwoOptionalDimension?
       | (SIGNED | UNSIGNED) INTEGER?
-    ) (ARRAY)?
+    ) ARRAY?
     ;
 
 lengthOneDimension
@@ -2220,6 +2234,7 @@ userVariables
 
 defaultValue
     : NULL_LITERAL
+    | CAST '(' expression AS convertedDataType ')'
     | unaryOperator? constant
     | currentTimestamp (ON UPDATE currentTimestamp)?
     | '(' expression ')'
@@ -2230,7 +2245,9 @@ defaultValue
 currentTimestamp
     :
     (
-      (CURRENT_TIMESTAMP | LOCALTIME | LOCALTIMESTAMP) ('(' decimalLiteral? ')')?
+      (CURRENT_TIMESTAMP | LOCALTIME | LOCALTIMESTAMP
+      | CURDATE | CURTIME) // MariaDB-specific
+      ('(' decimalLiteral? ')')?
       | NOW '(' decimalLiteral? ')'
     )
     ;
@@ -2260,6 +2277,7 @@ functionCall
 specificFunction
     : (
       CURRENT_DATE | CURRENT_TIME | CURRENT_TIMESTAMP
+      | CURDATE | CURTIME   // MariaDB-specific
       | CURRENT_USER | LOCALTIME | UTC_TIMESTAMP | SCHEMA
       ) ('(' ')')?                                                  #simpleFunctionCall
     | CONVERT '(' expression separator=',' convertedDataType ')'    #dataTypeFunctionCall
@@ -2566,7 +2584,7 @@ keywordsCanBeId
     | AUTO_INCREMENT | AVG | AVG_ROW_LENGTH | BACKUP_ADMIN | BEGIN | BINLOG | BINLOG_ADMIN | BINLOG_ENCRYPTION_ADMIN | BIT | BIT_AND | BIT_OR | BIT_XOR
     | BLOCK | BOOL | BOOLEAN | BTREE | CACHE | CASCADED | CHAIN | CHANGED
     | CHANNEL | CHECKSUM | PAGE_CHECKSUM | CATALOG_NAME | CIPHER
-    | CLASS_ORIGIN | CLIENT | CLONE_ADMIN | CLOSE | COALESCE | CODE
+    | CLASS_ORIGIN | CLIENT | CLONE_ADMIN | CLOSE | CLUSTERING | COALESCE | CODE
     | COLUMNS | COLUMN_FORMAT | COLUMN_NAME | COMMENT | COMMIT | COMPACT
     | COMPLETION | COMPRESSED | COMPRESSION | CONCURRENT | CONDITION | CONNECT
     | CONNECTION | CONNECTION_ADMIN | CONSISTENT | CONSTRAINT_CATALOG | CONSTRAINT_NAME
@@ -2575,14 +2593,14 @@ keywordsCanBeId
     | DATA | DATAFILE | DEALLOCATE
     | DEFAULT_AUTH | DEFINER | DELAY_KEY_WRITE | DES_KEY_FILE | DIAGNOSTICS | DIRECTORY
     | DISABLE | DISCARD | DISK | DO | DUMPFILE | DUPLICATE
-    | DYNAMIC | ENABLE | ENCRYPTION | ENCRYPTION_KEY_ADMIN | END | ENDS | ENGINE | ENGINES
+    | DYNAMIC | ENABLE | ENCRYPTION | ENCRYPTION_KEY_ADMIN | END | ENDS | ENGINE | ENGINE_ATTRIBUTE | ENGINES
     | ERROR | ERRORS | ESCAPE | EUR | EVEN | EVENT | EVENTS | EVERY | EXCEPT
     | EXCHANGE | EXCLUSIVE | EXPIRE | EXPORT | EXTENDED | EXTENT_SIZE | FAILED_LOGIN_ATTEMPTS | FAST | FAULTS
     | FIELDS | FILE_BLOCK_SIZE | FILTER | FIREWALL_ADMIN | FIREWALL_USER | FIRST | FIXED | FLUSH
     | FOLLOWS | FOUND | FULL | FUNCTION | GENERAL | GLOBAL | GRANTS | GROUP | GROUP_CONCAT
     | GROUP_REPLICATION | GROUP_REPLICATION_ADMIN | HANDLER | HASH | HELP | HISTORY | HOST | HOSTS | IDENTIFIED
-    | IGNORE_SERVER_IDS | IMPORT | INDEXES | INITIAL_SIZE | INNODB_REDO_LOG_ARCHIVE
-    | INPLACE | INSERT_METHOD | INSTALL | INSTANCE | INTERNAL | INVOKER | IO
+    | IGNORED | IGNORE_SERVER_IDS | IMPORT | INDEXES | INITIAL_SIZE | INNODB_REDO_LOG_ARCHIVE
+    | INPLACE | INSERT_METHOD | INSTALL | INSTANCE | INSTANT | INTERNAL | INVOKER | IO
     | IO_THREAD | IPC | ISO | ISOLATION | ISSUER | JIS | JSON | KEY_BLOCK_SIZE
     | LANGUAGE | LAST | LEAVES | LESS | LEVEL | LIST | LOCAL
     | LOGFILE | LOGS | MASTER | MASTER_AUTO_POSITION
@@ -2598,7 +2616,7 @@ keywordsCanBeId
     | MAX_USER_CONNECTIONS | MEDIUM | MEMBER | MEMORY | MERGE | MESSAGE_TEXT
     | MID | MIGRATE
     | MIN | MIN_ROWS | MODE | MODIFY | MUTEX | MYSQL | MYSQL_ERRNO | NAME | NAMES
-    | NCHAR | NDB_STORED_USER | NEVER | NEXT | NO | NODEGROUP | NONE | NUMBER | ODBC | OFFLINE | OFFSET
+    | NCHAR | NDB_STORED_USER | NEVER | NEXT | NO | NOCOPY | NODEGROUP | NONE | NOWAIT | NUMBER | ODBC | OFFLINE | OFFSET
     | OF | OJ | OLD_PASSWORD | ONE | ONLINE | ONLY | OPEN | OPTIMIZER_COSTS
     | OPTIONAL | OPTIONS | ORDER | OWNER | PACK_KEYS | PAGE | PARSER | PARTIAL
     | PARTITIONING | PARTITIONS | PASSWORD | PASSWORD_LOCK_TIME | PERSIST_RO_VARIABLES_ADMIN | PHASE | PLUGINS
@@ -2612,7 +2630,7 @@ keywordsCanBeId
     | REPLICATE_WILD_IGNORE_TABLE | REPLICATION | REPLICATION_APPLIER | REPLICATION_SLAVE_ADMIN | RESET
     | RESOURCE_GROUP_ADMIN | RESOURCE_GROUP_USER | RESUME
     | RETURNED_SQLSTATE | RETURNS | REUSE | ROLE | ROLE_ADMIN | ROLLBACK | ROLLUP | ROTATE | ROW | ROWS
-    | ROW_FORMAT | SAVEPOINT | SCHEDULE | SCHEMA_NAME | SECURITY | SERIAL | SERVER
+    | ROW_FORMAT | RTREE | SAVEPOINT | SCHEDULE | SCHEMA_NAME | SECURITY | SECONDARY_ENGINE_ATTRIBUTE | SERIAL | SERVER
     | SESSION | SESSION_VARIABLES_ADMIN | SET_USER_ID | SHARE | SHARED | SHOW_ROUTINE | SIGNED | SIMPLE | SLAVE
     | SLOW | SNAPSHOT | SOCKET | SOME | SONAME | SOUNDS | SOURCE
     | SQL_AFTER_GTIDS | SQL_AFTER_MTS_GAPS | SQL_BEFORE_GTIDS
@@ -2628,6 +2646,7 @@ keywordsCanBeId
     | WORK | WRAPPER | X509 | XA | XA_RECOVER_ADMIN | XML
     // MariaDB
     | VIA | LASTVAL | NEXTVAL | SETVAL | PREVIOUS | PERSISTENT | REPLICATION_MASTER_ADMIN | REPLICA | READ_ONLY_ADMIN | FEDERATED_ADMIN | BINLOG_MONITOR | BINLOG_REPLAY
+    | ENCRYPTED | ENCRYPTION_KEY_ID
     ;
 
 functionNameBase
@@ -2641,12 +2660,12 @@ functionNameBase
     | COMPRESS | CONCAT | CONCAT_WS | CONNECTION_ID | CONV
     | CONVERT_TZ | COS | COT | COUNT | CRC32
     | CREATE_ASYMMETRIC_PRIV_KEY | CREATE_ASYMMETRIC_PUB_KEY
-    | CREATE_DH_PARAMETERS | CREATE_DIGEST | CROSSES | DATABASE | DATE
+    | CREATE_DH_PARAMETERS | CREATE_DIGEST | CROSSES | CUME_DIST | DATABASE | DATE
     | DATEDIFF | DATE_FORMAT | DAY | DAYNAME | DAYOFMONTH
-    | DAYOFWEEK | DAYOFYEAR | DECODE | DEGREES | DES_DECRYPT
+    | DAYOFWEEK | DAYOFYEAR | DECODE | DEGREES | DENSE_RANK | DES_DECRYPT
     | DES_ENCRYPT | DIMENSION | DISJOINT | ELT | ENCODE
     | ENCRYPT | ENDPOINT | ENVELOPE | EQUALS | EXP | EXPORT_SET
-    | EXTERIORRING | EXTRACTVALUE | FIELD | FIND_IN_SET | FLOOR
+    | EXTERIORRING | EXTRACTVALUE | FIELD | FIND_IN_SET | FIRST_VALUE | FLOOR
     | FORMAT | FOUND_ROWS | FROM_BASE64 | FROM_DAYS
     | FROM_UNIXTIME | GEOMCOLLFROMTEXT | GEOMCOLLFROMWKB
     | GEOMETRYCOLLECTION | GEOMETRYCOLLECTIONFROMTEXT
@@ -2658,8 +2677,8 @@ functionNameBase
     | INTERIORRINGN | INTERSECTS | INVISIBLE
     | ISCLOSED | ISEMPTY | ISNULL
     | ISSIMPLE | IS_FREE_LOCK | IS_IPV4 | IS_IPV4_COMPAT
-    | IS_IPV4_MAPPED | IS_IPV6 | IS_USED_LOCK | LAST_INSERT_ID
-    | LCASE | LEAST | LEFT | LENGTH | LINEFROMTEXT | LINEFROMWKB
+    | IS_IPV4_MAPPED | IS_IPV6 | IS_USED_LOCK | LAG | LAST_INSERT_ID | LAST_VALUE
+    | LCASE | LEAD | LEAST | LEFT | LENGTH | LINEFROMTEXT | LINEFROMWKB
     | LINESTRING | LINESTRINGFROMTEXT | LINESTRINGFROMWKB | LN
     | LOAD_FILE | LOCATE | LOG | LOG10 | LOG2 | LOWER | LPAD
     | LTRIM | MAKEDATE | MAKETIME | MAKE_SET | MASTER_POS_WAIT
@@ -2670,14 +2689,14 @@ functionNameBase
     | MPOLYFROMWKB | MULTILINESTRING | MULTILINESTRINGFROMTEXT
     | MULTILINESTRINGFROMWKB | MULTIPOINT | MULTIPOINTFROMTEXT
     | MULTIPOINTFROMWKB | MULTIPOLYGON | MULTIPOLYGONFROMTEXT
-    | MULTIPOLYGONFROMWKB | NAME_CONST | NULLIF | NUMGEOMETRIES
+    | MULTIPOLYGONFROMWKB | NAME_CONST | NTH_VALUE | NTILE | NULLIF | NUMGEOMETRIES
     | NUMINTERIORRINGS | NUMPOINTS | OCT | OCTET_LENGTH | ORD
-    | OVERLAPS | PERIOD_ADD | PERIOD_DIFF | PI | POINT
+    | OVERLAPS | PERCENT_RANK | PERIOD_ADD | PERIOD_DIFF | PI | POINT
     | POINTFROMTEXT | POINTFROMWKB | POINTN | POLYFROMTEXT
     | POLYFROMWKB | POLYGON | POLYGONFROMTEXT | POLYGONFROMWKB
-    | POSITION| POW | POWER | QUARTER | QUOTE | RADIANS | RAND
+    | POSITION | POW | POWER | QUARTER | QUOTE | RADIANS | RAND | RANK
     | RANDOM_BYTES | RELEASE_LOCK | REVERSE | RIGHT | ROUND
-    | ROW_COUNT | RPAD | RTRIM | SECOND | SEC_TO_TIME
+    | ROW_COUNT | ROW_NUMBER | RPAD | RTRIM | SECOND | SEC_TO_TIME
     | SESSION_USER | SESSION_VARIABLES_ADMIN
     | SHA | SHA1 | SHA2 | SIGN | SIN | SLEEP
     | SOUNDEX | SQL_THREAD_WAIT_AFTER_GTIDS | SQRT | SRID

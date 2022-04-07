@@ -18,6 +18,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -66,7 +67,7 @@ public abstract class AbstractProcessorUnitTest<T extends AbstractLogMinerEventP
     public TestRule skipRule = new SkipTestDependingOnAdapterNameRule();
 
     protected ChangeEventSourceContext context;
-    protected EventDispatcher<TableId> dispatcher;
+    protected EventDispatcher<OraclePartition, TableId> dispatcher;
     protected OracleDatabaseSchema schema;
     protected OracleStreamingChangeEventSourceMetrics metrics;
     protected OraclePartition partition;
@@ -79,12 +80,24 @@ public abstract class AbstractProcessorUnitTest<T extends AbstractLogMinerEventP
         this.context = Mockito.mock(ChangeEventSourceContext.class);
         Mockito.when(this.context.isRunning()).thenReturn(true);
 
-        this.dispatcher = (EventDispatcher<TableId>) Mockito.mock(EventDispatcher.class);
+        this.dispatcher = (EventDispatcher<OraclePartition, TableId>) Mockito.mock(EventDispatcher.class);
         this.partition = Mockito.mock(OraclePartition.class);
         this.offsetContext = Mockito.mock(OracleOffsetContext.class);
         this.connection = createOracleConnection();
         this.schema = createOracleDatabaseSchema();
         this.metrics = createMetrics(schema);
+    }
+
+    @After
+    public void after() {
+        if (schema != null) {
+            try {
+                schema.close();
+            }
+            finally {
+                schema = null;
+            }
+        }
     }
 
     protected abstract Configuration.Builder getConfig();
@@ -116,11 +129,12 @@ public abstract class AbstractProcessorUnitTest<T extends AbstractLogMinerEventP
     @Test
     public void testCacheIsEmptyWhenTransactionIsCommitted() throws Exception {
         final OracleConnectorConfig config = new OracleConnectorConfig(getConfig().build());
+        final OraclePartition partition = new OraclePartition(config.getLogicalName());
         try (T processor = getProcessor(config)) {
             final LogMinerEventRow insertRow = getInsertLogMinerEventRow(Scn.valueOf(2L), TRANSACTION_ID_1);
             processor.handleStart(getStartLogMinerEventRow(Scn.valueOf(1L), TRANSACTION_ID_1));
             processor.handleDataEvent(insertRow);
-            processor.handleCommit(getCommitLogMinerEventRow(Scn.valueOf(3L), TRANSACTION_ID_1));
+            processor.handleCommit(partition, getCommitLogMinerEventRow(Scn.valueOf(3L), TRANSACTION_ID_1));
             assertThat(processor.getTransactionCache().isEmpty()).isTrue();
         }
     }
@@ -169,10 +183,11 @@ public abstract class AbstractProcessorUnitTest<T extends AbstractLogMinerEventP
     @Test
     public void testCalculateScnWhenTransactionIsCommitted() throws Exception {
         final OracleConnectorConfig config = new OracleConnectorConfig(getConfig().build());
+        final OraclePartition partition = new OraclePartition(config.getLogicalName());
         try (T processor = getProcessor(config)) {
             processor.handleStart(getStartLogMinerEventRow(Scn.valueOf(1L), TRANSACTION_ID_1));
             processor.handleDataEvent(getInsertLogMinerEventRow(Scn.valueOf(2L), TRANSACTION_ID_1));
-            processor.handleCommit(getCommitLogMinerEventRow(Scn.valueOf(3L), TRANSACTION_ID_1));
+            processor.handleCommit(partition, getCommitLogMinerEventRow(Scn.valueOf(3L), TRANSACTION_ID_1));
             assertThat(metrics.getOldestScn()).isEqualTo(Scn.valueOf(2L).toString());
             assertThat(metrics.getRolledBackTransactionIds()).isEmpty();
         }
@@ -181,17 +196,18 @@ public abstract class AbstractProcessorUnitTest<T extends AbstractLogMinerEventP
     @Test
     public void testCalculateScnWhenFirstTransactionIsCommitted() throws Exception {
         final OracleConnectorConfig config = new OracleConnectorConfig(getConfig().build());
+        final OraclePartition partition = new OraclePartition(config.getLogicalName());
         try (T processor = getProcessor(config)) {
             processor.handleStart(getStartLogMinerEventRow(Scn.valueOf(1L), TRANSACTION_ID_1));
             processor.handleDataEvent(getInsertLogMinerEventRow(Scn.valueOf(2L), TRANSACTION_ID_1));
             processor.handleStart(getStartLogMinerEventRow(Scn.valueOf(3L), TRANSACTION_ID_2));
             processor.handleDataEvent(getInsertLogMinerEventRow(Scn.valueOf(4L), TRANSACTION_ID_2));
 
-            processor.handleCommit(getCommitLogMinerEventRow(Scn.valueOf(5L), TRANSACTION_ID_1));
+            processor.handleCommit(partition, getCommitLogMinerEventRow(Scn.valueOf(5L), TRANSACTION_ID_1));
             assertThat(metrics.getOldestScn()).isEqualTo(Scn.valueOf(3L).toString());
             assertThat(metrics.getRolledBackTransactionIds()).isEmpty();
 
-            processor.handleCommit(getCommitLogMinerEventRow(Scn.valueOf(6L), TRANSACTION_ID_2));
+            processor.handleCommit(partition, getCommitLogMinerEventRow(Scn.valueOf(6L), TRANSACTION_ID_2));
             assertThat(metrics.getOldestScn()).isEqualTo(Scn.valueOf(4L).toString());
         }
     }
@@ -199,13 +215,14 @@ public abstract class AbstractProcessorUnitTest<T extends AbstractLogMinerEventP
     @Test
     public void testCalculateScnWhenSecondTransactionIsCommitted() throws Exception {
         final OracleConnectorConfig config = new OracleConnectorConfig(getConfig().build());
+        final OraclePartition partition = new OraclePartition(config.getLogicalName());
         try (T processor = getProcessor(config)) {
             processor.handleStart(getStartLogMinerEventRow(Scn.valueOf(1L), TRANSACTION_ID_1));
             processor.handleDataEvent(getInsertLogMinerEventRow(Scn.valueOf(2L), TRANSACTION_ID_1));
             processor.handleStart(getStartLogMinerEventRow(Scn.valueOf(3L), TRANSACTION_ID_2));
             processor.handleDataEvent(getInsertLogMinerEventRow(Scn.valueOf(4L), TRANSACTION_ID_2));
 
-            processor.handleCommit(getCommitLogMinerEventRow(Scn.valueOf(5L), TRANSACTION_ID_2));
+            processor.handleCommit(partition, getCommitLogMinerEventRow(Scn.valueOf(5L), TRANSACTION_ID_2));
             assertThat(metrics.getOldestScn()).isEqualTo(Scn.valueOf(1L).toString());
             assertThat(metrics.getRolledBackTransactionIds()).isEmpty();
         }
@@ -254,7 +271,7 @@ public abstract class AbstractProcessorUnitTest<T extends AbstractLogMinerEventP
     private OracleDatabaseSchema createOracleDatabaseSchema() throws Exception {
         final OracleConnectorConfig connectorConfig = new OracleConnectorConfig(getConfig().build());
         final TopicSelector<TableId> topicSelector = OracleTopicSelector.defaultSelector(connectorConfig);
-        final SchemaNameAdjuster schemaNameAdjuster = SchemaNameAdjuster.create();
+        final SchemaNameAdjuster schemaNameAdjuster = connectorConfig.schemaNameAdjustmentMode().createAdjuster();
         final OracleValueConverters converters = new OracleValueConverters(connectorConfig, connection);
         final OracleDefaultValueConverter defaultValueConverter = new OracleDefaultValueConverter(converters, connection);
         final TableNameCaseSensitivity sensitivity = connectorConfig.getAdapter().getTableNameCaseSensitivity(connection);

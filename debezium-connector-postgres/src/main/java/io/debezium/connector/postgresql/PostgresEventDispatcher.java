@@ -31,7 +31,7 @@ import io.debezium.util.SchemaNameAdjuster;
  *
  * @author Lairen Hightower
  */
-public class PostgresEventDispatcher<T extends DataCollectionId> extends EventDispatcher<T> {
+public class PostgresEventDispatcher<T extends DataCollectionId> extends EventDispatcher<PostgresPartition, T> {
     private static final Logger LOGGER = LoggerFactory.getLogger(PostgresEventDispatcher.class);
     private final ChangeEventQueue<DataChangeEvent> queue;
     private final LogicalDecodingMessageMonitor logicalDecodingMessageMonitor;
@@ -54,11 +54,11 @@ public class PostgresEventDispatcher<T extends DataCollectionId> extends EventDi
 
     public PostgresEventDispatcher(PostgresConnectorConfig connectorConfig, TopicSelector<T> topicSelector,
                                    DatabaseSchema<T> schema, ChangeEventQueue<DataChangeEvent> queue, DataCollectionFilters.DataCollectionFilter<T> filter,
-                                   ChangeEventCreator changeEventCreator, InconsistentSchemaHandler<T> inconsistentSchemaHandler,
+                                   ChangeEventCreator changeEventCreator, InconsistentSchemaHandler<PostgresPartition, T> inconsistentSchemaHandler,
                                    EventMetadataProvider metadataProvider, Heartbeat customHeartbeat, SchemaNameAdjuster schemaNameAdjuster,
                                    JdbcConnection jdbcConnection) {
         super(connectorConfig, topicSelector, schema, queue, filter, changeEventCreator, inconsistentSchemaHandler, metadataProvider,
-                customHeartbeat, schemaNameAdjuster, jdbcConnection);
+                customHeartbeat, schemaNameAdjuster);
         this.queue = queue;
         this.logicalDecodingMessageMonitor = new LogicalDecodingMessageMonitor(connectorConfig, this::enqueueLogicalDecodingMessage);
         this.messageFilter = connectorConfig.getMessageFilter();

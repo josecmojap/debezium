@@ -7,7 +7,6 @@ package io.debezium.connector.mysql;
 
 import static io.debezium.util.Strings.isNullOrEmpty;
 
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
@@ -34,6 +33,7 @@ import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
 import javax.net.ssl.X509TrustManager;
 
 import org.slf4j.Logger;
@@ -113,7 +113,7 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
     private final MySqlTaskContext taskContext;
     private final MySqlConnectorConfig connectorConfig;
     private final MySqlConnection connection;
-    private final EventDispatcher<TableId> eventDispatcher;
+    private final EventDispatcher<MySqlPartition, TableId> eventDispatcher;
     private final ErrorHandler errorHandler;
 
     @SingleThreadAccess("binlog client thread")
@@ -180,7 +180,7 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
     }
 
     public MySqlStreamingChangeEventSource(MySqlConnectorConfig connectorConfig, MySqlConnection connection,
-                                           EventDispatcher<TableId> dispatcher, ErrorHandler errorHandler, Clock clock,
+                                           EventDispatcher<MySqlPartition, TableId> dispatcher, ErrorHandler errorHandler, Clock clock,
                                            MySqlTaskContext taskContext, MySqlStreamingChangeEventSourceMetrics metrics) {
 
         this.taskContext = taskContext;
@@ -324,7 +324,7 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
         // contains only *seconds* precision ...
         // HEARTBEAT events have no timestamp; only set the timestamp if the event is not a HEARTBEAT
         eventTimestamp = !eventHeader.getEventType().equals(EventType.HEARTBEAT) ? Instant.ofEpochMilli(eventHeader.getTimestamp()) : null;
-        offsetContext.setBinlogThread(eventHeader.getServerId());
+        offsetContext.setBinlogServerId(eventHeader.getServerId());
 
         final EventType eventType = eventHeader.getEventType();
         if (eventType == EventType.ROTATE) {
@@ -417,9 +417,9 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
      *
      * @param event the server stopped event to be processed; may not be null
      */
-    protected void handleServerIncident(MySqlOffsetContext offsetContext, Event event) {
+    protected void handleServerIncident(MySqlPartition partition, MySqlOffsetContext offsetContext, Event event) {
         if (event.getData() instanceof EventDataDeserializationExceptionData) {
-            metrics.onErroneousEvent("source = " + event.toString());
+            metrics.onErroneousEvent(partition, "source = " + event);
             EventDataDeserializationExceptionData data = event.getData();
 
             EventHeaderV4 eventHeader = (EventHeaderV4) data.getCause().getEventHeader(); // safe cast, instantiated that ourselves
@@ -554,18 +554,8 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
             return;
         }
         if (upperCasedStatementBegin.equals("INSERT ") || upperCasedStatementBegin.equals("UPDATE ") || upperCasedStatementBegin.equals("DELETE ")) {
-            if (eventDeserializationFailureHandlingMode == EventProcessingFailureHandlingMode.FAIL) {
-                throw new DebeziumException(
-                        "Received DML '" + sql + "' for processing, binlog probably contains events generated with statement or mixed based replication format");
-            }
-            else if (eventDeserializationFailureHandlingMode == EventProcessingFailureHandlingMode.WARN) {
-                LOGGER.warn("Warning only: Received DML '" + sql
-                        + "' for processing, binlog probably contains events generated with statement or mixed based replication format");
-                return;
-            }
-            else {
-                return;
-            }
+            LOGGER.warn("Received DML '" + sql + "' for processing, binlog probably contains events generated with statement or mixed based replication format");
+            return;
         }
         if (sql.equalsIgnoreCase("ROLLBACK")) {
             // We have hit a ROLLBACK which is not supported
@@ -582,7 +572,7 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
                 }
 
                 final TableId tableId = schemaChangeEvent.getTables().isEmpty() ? null : schemaChangeEvent.getTables().iterator().next().id();
-                eventDispatcher.dispatchSchemaChangeEvent(tableId, (receiver) -> {
+                eventDispatcher.dispatchSchemaChangeEvent(partition, tableId, (receiver) -> {
                     try {
                         receiver.schemaChangeEvent(schemaChangeEvent);
                     }
@@ -630,7 +620,7 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
             LOGGER.debug("Received update table metadata event: {}", event);
         }
         else {
-            informAboutUnknownTableIfRequired(partition, offsetContext, event, tableId, "update table metadata");
+            informAboutUnknownTableIfRequired(partition, offsetContext, event, tableId);
         }
     }
 
@@ -639,10 +629,11 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
      * don't know, either ignore that event or raise a warning or error as per the
      * {@link MySqlConnectorConfig#INCONSISTENT_SCHEMA_HANDLING_MODE} configuration.
      */
-    private void informAboutUnknownTableIfRequired(MySqlPartition partition, MySqlOffsetContext offsetContext, Event event, TableId tableId, String typeToLog)
+    private void informAboutUnknownTableIfRequired(MySqlPartition partition, MySqlOffsetContext offsetContext, Event event, TableId tableId,
+                                                   Operation operation)
             throws InterruptedException {
         if (tableId != null && connectorConfig.getTableFilters().dataCollectionFilter().isIncluded(tableId)) {
-            metrics.onErroneousEvent("source = " + tableId + ", event " + event);
+            metrics.onErroneousEvent(partition, "source = " + tableId + ", event " + event, operation);
             EventHeaderV4 eventHeader = event.getHeader();
 
             if (inconsistentSchemaHandlingMode == EventProcessingFailureHandlingMode.FAIL) {
@@ -672,10 +663,27 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
             }
         }
         else {
-            LOGGER.debug("Filtering {} event: {} for non-monitored table {}", typeToLog, event, tableId);
-            metrics.onFilteredEvent("source = " + tableId);
+            if (tableId == null) {
+                EventData eventData = unwrapData(event);
+                if (eventData instanceof WriteRowsEventData) {
+                    tableId = taskContext.getSchema().getExcludeTableId(((WriteRowsEventData) eventData).getTableId());
+                }
+                else if (eventData instanceof UpdateRowsEventData) {
+                    tableId = taskContext.getSchema().getExcludeTableId(((UpdateRowsEventData) eventData).getTableId());
+                }
+                else if (eventData instanceof DeleteRowsEventData) {
+                    tableId = taskContext.getSchema().getExcludeTableId(((DeleteRowsEventData) eventData).getTableId());
+                }
+            }
+            LOGGER.trace("Filtered {} event for {}", event.getHeader().getEventType(), tableId);
+            metrics.onFilteredEvent(partition, "source = " + tableId, operation);
             eventDispatcher.dispatchFilteredEvent(partition, offsetContext);
         }
+    }
+
+    private void informAboutUnknownTableIfRequired(MySqlPartition partition, MySqlOffsetContext offsetContext, Event event, TableId tableId)
+            throws InterruptedException {
+        informAboutUnknownTableIfRequired(partition, offsetContext, event, tableId, null);
     }
 
     /**
@@ -686,9 +694,9 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
      * @throws InterruptedException if this thread is interrupted while blocking
      */
     protected void handleInsert(MySqlPartition partition, MySqlOffsetContext offsetContext, Event event) throws InterruptedException {
-        handleChange(partition, offsetContext, event, "insert", WriteRowsEventData.class, x -> taskContext.getSchema().getTableId(x.getTableId()),
+        handleChange(partition, offsetContext, event, Operation.CREATE, WriteRowsEventData.class, x -> taskContext.getSchema().getTableId(x.getTableId()),
                 WriteRowsEventData::getRows,
-                (tableId, row) -> eventDispatcher.dispatchDataChangeEvent(tableId,
+                (tableId, row) -> eventDispatcher.dispatchDataChangeEvent(partition, tableId,
                         new MySqlChangeRecordEmitter(partition, offsetContext, clock, Operation.CREATE, null, row)));
     }
 
@@ -700,9 +708,9 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
      * @throws InterruptedException if this thread is interrupted while blocking
      */
     protected void handleUpdate(MySqlPartition partition, MySqlOffsetContext offsetContext, Event event) throws InterruptedException {
-        handleChange(partition, offsetContext, event, "update", UpdateRowsEventData.class, x -> taskContext.getSchema().getTableId(x.getTableId()),
+        handleChange(partition, offsetContext, event, Operation.UPDATE, UpdateRowsEventData.class, x -> taskContext.getSchema().getTableId(x.getTableId()),
                 UpdateRowsEventData::getRows,
-                (tableId, row) -> eventDispatcher.dispatchDataChangeEvent(tableId,
+                (tableId, row) -> eventDispatcher.dispatchDataChangeEvent(partition, tableId,
                         new MySqlChangeRecordEmitter(partition, offsetContext, clock, Operation.UPDATE, row.getKey(), row.getValue())));
     }
 
@@ -714,13 +722,13 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
      * @throws InterruptedException if this thread is interrupted while blocking
      */
     protected void handleDelete(MySqlPartition partition, MySqlOffsetContext offsetContext, Event event) throws InterruptedException {
-        handleChange(partition, offsetContext, event, "delete", DeleteRowsEventData.class, x -> taskContext.getSchema().getTableId(x.getTableId()),
+        handleChange(partition, offsetContext, event, Operation.DELETE, DeleteRowsEventData.class, x -> taskContext.getSchema().getTableId(x.getTableId()),
                 DeleteRowsEventData::getRows,
-                (tableId, row) -> eventDispatcher.dispatchDataChangeEvent(tableId,
+                (tableId, row) -> eventDispatcher.dispatchDataChangeEvent(partition, tableId,
                         new MySqlChangeRecordEmitter(partition, offsetContext, clock, Operation.DELETE, row, null)));
     }
 
-    private <T extends EventData, U> void handleChange(MySqlPartition partition, MySqlOffsetContext offsetContext, Event event, String changeType,
+    private <T extends EventData, U> void handleChange(MySqlPartition partition, MySqlOffsetContext offsetContext, Event event, Operation operation,
                                                        Class<T> eventDataClass,
                                                        TableIdProvider<T> tableIdProvider,
                                                        RowsProvider<T, U> rowsProvider, BinlogChangeEmitter<U> changeEmitter)
@@ -737,6 +745,7 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
         final T data = unwrapData(event);
         final TableId tableId = tableIdProvider.getTableId(data);
         final List<U> rows = rowsProvider.getRows(data);
+        String changeType = operation.name();
 
         if (tableId != null && taskContext.getSchema().schemaFor(tableId) != null) {
             int count = 0;
@@ -765,7 +774,7 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
             }
         }
         else {
-            informAboutUnknownTableIfRequired(partition, offsetContext, event, tableId, changeType + " row");
+            informAboutUnknownTableIfRequired(partition, offsetContext, event, tableId, operation);
         }
         startingRowNumber = 0;
     }
@@ -826,7 +835,7 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
         // Register our event handlers ...
         eventHandlers.put(EventType.STOP, (event) -> handleServerStop(effectiveOffsetContext, event));
         eventHandlers.put(EventType.HEARTBEAT, (event) -> handleServerHeartbeat(partition, effectiveOffsetContext, event));
-        eventHandlers.put(EventType.INCIDENT, (event) -> handleServerIncident(effectiveOffsetContext, event));
+        eventHandlers.put(EventType.INCIDENT, (event) -> handleServerIncident(partition, effectiveOffsetContext, event));
         eventHandlers.put(EventType.ROTATE, (event) -> handleRotateLogsEvent(effectiveOffsetContext, event));
         eventHandlers.put(EventType.TABLE_MAP, (event) -> handleUpdateTableMetadata(partition, effectiveOffsetContext, event));
         eventHandlers.put(EventType.QUERY, (event) -> handleQueryEvent(partition, effectiveOffsetContext, event));
@@ -986,65 +995,73 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
         String acceptedTlsVersion = connection.getSessionVariableForSslVersion();
         if (!isNullOrEmpty(acceptedTlsVersion)) {
             SSLMode sslMode = sslModeFor(connectorConfig.sslMode());
+            LOGGER.info("Enable ssl " + sslMode + " mode for connector " + connectorConfig.getLogicalName());
 
-            // Keystore settings can be passed via system properties too so we need to read them
-            final String password = System.getProperty("javax.net.ssl.keyStorePassword");
-            final String keyFilename = System.getProperty("javax.net.ssl.keyStore");
+            final char[] keyPasswordArray = connection.connectionConfig().sslKeyStorePassword();
+            final String keyFilename = connection.connectionConfig().sslKeyStore();
+            final char[] trustPasswordArray = connection.connectionConfig().sslTrustStorePassword();
+            final String trustFilename = connection.connectionConfig().sslTrustStore();
             KeyManager[] keyManagers = null;
             if (keyFilename != null) {
-                final char[] passwordArray = (password == null) ? null : password.toCharArray();
                 try {
-                    KeyStore ks = KeyStore.getInstance("JKS");
-                    ks.load(new FileInputStream(keyFilename), passwordArray);
+                    KeyStore ks = connection.loadKeyStore(keyFilename, keyPasswordArray);
 
                     KeyManagerFactory kmf = KeyManagerFactory.getInstance("NewSunX509");
-                    kmf.init(ks, passwordArray);
+                    kmf.init(ks, keyPasswordArray);
 
                     keyManagers = kmf.getKeyManagers();
                 }
-                catch (KeyStoreException | IOException | CertificateException | NoSuchAlgorithmException | UnrecoverableKeyException e) {
+                catch (KeyStoreException | NoSuchAlgorithmException | UnrecoverableKeyException e) {
                     throw new DebeziumException("Could not load keystore", e);
                 }
             }
+            TrustManager[] trustManagers;
+            try {
+                KeyStore ks = null;
+                if (trustFilename != null) {
+                    ks = connection.loadKeyStore(trustFilename, trustPasswordArray);
+                }
 
+                if (ks == null && (sslMode == SSLMode.PREFERRED || sslMode == SSLMode.REQUIRED)) {
+                    trustManagers = new TrustManager[]{
+                            new X509TrustManager() {
+
+                                @Override
+                                public void checkClientTrusted(X509Certificate[] x509Certificates, String s)
+                                        throws CertificateException {
+                                }
+
+                                @Override
+                                public void checkServerTrusted(X509Certificate[] x509Certificates, String s)
+                                        throws CertificateException {
+                                }
+
+                                @Override
+                                public X509Certificate[] getAcceptedIssuers() {
+                                    return new X509Certificate[0];
+                                }
+                            }
+                    };
+                }
+                else {
+                    TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+                    tmf.init(ks);
+                    trustManagers = tmf.getTrustManagers();
+                }
+            }
+            catch (KeyStoreException | NoSuchAlgorithmException e) {
+                throw new DebeziumException("Could not load truststore", e);
+            }
             // DBZ-1208 Resembles the logic from the upstream BinaryLogClient, only that
             // the accepted TLS version is passed to the constructed factory
-            if (sslMode == SSLMode.PREFERRED || sslMode == SSLMode.REQUIRED) {
-                final KeyManager[] finalKMS = keyManagers;
-                return new DefaultSSLSocketFactory(acceptedTlsVersion) {
+            final KeyManager[] finalKMS = keyManagers;
+            return new DefaultSSLSocketFactory(acceptedTlsVersion) {
 
-                    @Override
-                    protected void initSSLContext(SSLContext sc)
-                            throws GeneralSecurityException {
-                        sc.init(finalKMS, new TrustManager[]{
-                                new X509TrustManager() {
-
-                                    @Override
-                                    public void checkClientTrusted(
-                                                                   X509Certificate[] x509Certificates,
-                                                                   String s)
-                                            throws CertificateException {
-                                    }
-
-                                    @Override
-                                    public void checkServerTrusted(
-                                                                   X509Certificate[] x509Certificates,
-                                                                   String s)
-                                            throws CertificateException {
-                                    }
-
-                                    @Override
-                                    public X509Certificate[] getAcceptedIssuers() {
-                                        return new X509Certificate[0];
-                                    }
-                                }
-                        }, null);
-                    }
-                };
-            }
-            else {
-                return new DefaultSSLSocketFactory(acceptedTlsVersion);
-            }
+                @Override
+                protected void initSSLContext(SSLContext sc) throws GeneralSecurityException {
+                    sc.init(finalKMS, trustManagers, null);
+                }
+            };
         }
 
         return null;

@@ -50,6 +50,7 @@ import io.debezium.relational.ddl.DdlParser;
 import io.debezium.relational.ddl.DdlParserListener.Event;
 import io.debezium.relational.ddl.SimpleDdlParserListener;
 import io.debezium.time.ZonedTimestamp;
+import io.debezium.util.Collect;
 import io.debezium.util.IoUtil;
 import io.debezium.util.SchemaNameAdjuster;
 import io.debezium.util.Testing;
@@ -78,7 +79,58 @@ public class MySqlAntlrDdlParserTest {
         tableSchemaBuilder = new TableSchemaBuilder(
                 converters,
                 new MySqlDefaultValueConverter(converters),
-                SchemaNameAdjuster.create(), new CustomConverterRegistry(null), SchemaBuilder.struct().build(), false, false);
+                SchemaNameAdjuster.NO_OP, new CustomConverterRegistry(null), SchemaBuilder.struct().build(), false, false);
+    }
+
+    @Test
+    @FixFor("DBZ-4583")
+    public void shouldProcessLargeColumn() {
+        String ddl = "create table if not exists tbl_large_col(\n"
+                + "`id` bigint(20) NOT NULL AUTO_INCREMENT,\n"
+                + "c1 blob(4294967295) NOT NULL,\n"
+                + "PRIMARY KEY (`id`)\n"
+                + ")";
+        parser.parse(ddl, tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+        assertThat(tables.size()).isEqualTo(1);
+
+        Table table = tables.forTable(null, null, "tbl_large_col");
+
+        assertThat(table.columnWithName("c1").typeName()).isEqualTo("BLOB");
+        assertThat(table.columnWithName("c1").length()).isEqualTo(Integer.MAX_VALUE);
+    }
+
+    @Test
+    @FixFor("DBZ-4497")
+    public void shouldProcessMultipleSignedUnsignedForTable() {
+        String ddl = "create table if not exists tbl_signed_unsigned(\n"
+                + "`id` bigint(20) ZEROFILL signed UNSIGNED signed ZEROFILL unsigned ZEROFILL NOT NULL AUTO_INCREMENT COMMENT 'ID',\n"
+                + "c1 int signed unsigned,\n"
+                + "c2 decimal(10, 2) SIGNED UNSIGNED ZEROFILL,\n"
+                + "c3 float SIGNED ZEROFILL,\n"
+                + "c4 double precision(18, 4) UNSIGNED SIGNED ZEROFILL,\n"
+                + "PRIMARY KEY (`id`)\n"
+                + ")";
+        parser.parse(ddl, tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+        assertThat(tables.size()).isEqualTo(1);
+
+        Table table = tables.forTable(null, null, "tbl_signed_unsigned");
+
+        assertThat(table.columnWithName("id").typeName()).isEqualTo("BIGINT UNSIGNED ZEROFILL");
+        assertThat(table.columnWithName("c1").typeName()).isEqualTo("INT UNSIGNED");
+
+        Column c2 = table.columnWithName("c2");
+        assertThat(c2.typeName()).isEqualTo("DECIMAL UNSIGNED ZEROFILL");
+        assertThat(c2.length()).isEqualTo(10);
+        assertThat(c2.scale().get()).isEqualTo(2);
+
+        assertThat(table.columnWithName("c3").typeName()).isEqualTo("FLOAT SIGNED ZEROFILL");
+
+        Column c4 = table.columnWithName("c4");
+        assertThat(c4.typeName()).isEqualTo("DOUBLE PRECISION UNSIGNED ZEROFILL");
+        assertThat(c4.length()).isEqualTo(18);
+        assertThat(c4.scale().get()).isEqualTo(4);
     }
 
     @Test
@@ -562,6 +614,89 @@ public class MySqlAntlrDdlParserTest {
     }
 
     @Test
+    @FixFor("DBZ-4841")
+    public void shouldProcessMariadbCreateIndex() {
+        String createIndexDdl = "CREATE INDEX IF NOT EXISTS DX_DT_LAST_UPDATE ON patient(DT_LAST_UPDATE)\n"
+                + "WAIT 100\n"
+                + "KEY_BLOCK_SIZE=1024M\n"
+                + "CLUSTERING =YES\n"
+                + "USING RTREE\n"
+                + "NOT IGNORED\n"
+                + "ALGORITHM = NOCOPY\n"
+                + "LOCK EXCLUSIVE";
+        parser.parse(createIndexDdl, tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+    }
+
+    @Test
+    @FixFor("DBZ-4661")
+    public void shouldSupportCreateTableWithEcrytion() {
+        parser.parse(
+                "CREATE TABLE `t_test_encrypted_test1` " +
+                        "(`id` int(11) NOT NULL AUTO_INCREMENT) " +
+                        "ENGINE=InnoDB DEFAULT CHARSET=utf8 `ENCRYPTED`=YES COMMENT 'MariaDb encrypted table'",
+                tables);
+        parser.parse(
+                "CREATE TABLE `t_test_encrypted_test2` " +
+                        "(`id` int(11) NOT NULL AUTO_INCREMENT) " +
+                        "ENGINE=InnoDB DEFAULT CHARSET=utf8 `encrypted`=yes COMMENT 'MariaDb encrypted table'",
+                tables);
+        parser.parse(
+                "CREATE TABLE `t_test_encrypted_test3` " +
+                        "(`id` int(11) NOT NULL AUTO_INCREMENT) " +
+                        "ENGINE=InnoDB DEFAULT CHARSET=utf8 ENCRYPTED=yes COMMENT 'MariaDb encrypted table'",
+                tables);
+        parser.parse(
+                "CREATE TABLE `t_test_encrypted_test` " +
+                        "(`id` int(11) NOT NULL AUTO_INCREMENT) " +
+                        "ENGINE=InnoDB DEFAULT CHARSET=utf8 `encrypted`=YES COMMENT 'MariaDb encrypted table'",
+                tables);
+        parser.parse("CREATE TABLE `t_test_encryption` " +
+                "(`id` int(11) NOT NULL AUTO_INCREMENT) " +
+                "ENGINE=InnoDB DEFAULT CHARSET=utf8 ENCRYPTION='Y' COMMENT 'Mysql encrypted table';", tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+    }
+
+    @Test
+    @FixFor("DBZ-4675")
+    public void shouldSupportCreateTableWithCompressed() {
+        parser.parse(
+                "CREATE TABLE `my_table_page_compressed1` (\n" +
+                        "`column1` bigint(20) NOT NULL,\n" +
+                        "`column2` bigint(20) NOT NULL,\n" +
+                        "`column3` bigint(20) NOT NULL,\n" +
+                        "`column4` bigint(20) NOT NULL,\n" +
+                        "`column5` bigint(20) NOT NULL,\n" +
+                        "`column6` bigint(20) NOT NULL,\n" +
+                        "`column7` bigint(20) NOT NULL,\n" +
+                        "`column8` blob,\n" +
+                        "`column9` varchar(64) DEFAULT NULL,\n" +
+                        "PRIMARY KEY (`column1`),\n" +
+                        "KEY `idx_my_index_column2` (`column2`)\n" +
+                        ") ENGINE=InnoDB DEFAULT CHARSET=utf8 ROW_FORMAT=COMPRESSED `encrypted`=yes `page_compressed`=0",
+                tables);
+        parser.parse(
+                "CREATE TABLE `my_table_page_compressed2` (\n" +
+                        "`column1` bigint(20) NOT NULL" +
+                        ") ENGINE=InnoDB DEFAULT CHARSET=utf8 ROW_FORMAT=COMPRESSED " +
+                        "`encrypted`=yes `page_compressed`=1 `PAGE_COMPRESSION_LEVEL`=0",
+                tables);
+        parser.parse(
+                "CREATE TABLE `my_table_page_compressed3` (\n" +
+                        "`column1` bigint(20) NOT NULL" +
+                        ") ENGINE=InnoDB DEFAULT CHARSET=utf8 ROW_FORMAT=COMPRESSED " +
+                        "`encrypted`=yes page_compressed=1 `page_compression_level`=3",
+                tables);
+        parser.parse(
+                "CREATE TABLE `my_table_page_compressed4` (\n" +
+                        "`column1` bigint(20) NOT NULL" +
+                        ") ENGINE=InnoDB DEFAULT CHARSET=utf8 ROW_FORMAT=COMPRESSED " +
+                        "`encrypted`=yes `page_compressed`=0 PAGE_COMPRESSION_LEVEL=3",
+                tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+    }
+
+    @Test
     @FixFor("DBZ-1349")
     public void shouldSupportUtfMb3Charset() {
         String ddl = " CREATE TABLE `engine_cost` (\n" +
@@ -824,7 +959,7 @@ public class MySqlAntlrDdlParserTest {
     }
 
     @Test
-    @FixFor({ "DBZ-1150", "DBZ-4174" })
+    @FixFor({ "DBZ-1150", "DBZ-4174", "DBZ-4640" })
     public void shouldParseCheckTableKeywords() {
         String ddl = "CREATE TABLE my_table (\n" +
                 "  user_id varchar(64) NOT NULL,\n" +
@@ -839,6 +974,7 @@ public class MySqlAntlrDdlParserTest {
                 "  usa VARCHAR(100),\n" +
                 "  jis VARCHAR(100),\n" +
                 "  internal INT,\n" +
+                "  instant BIT,\n" +
                 "  UNIQUE KEY call_states_userid (user_id)\n" +
                 ") ENGINE=InnoDB DEFAULT CHARSET=utf8";
         parser.parse(ddl, tables);
@@ -851,22 +987,26 @@ public class MySqlAntlrDdlParserTest {
         assertThat(table.columnWithName("medium")).isNotNull();
         assertThat(table.columnWithName("extended")).isNotNull();
         assertThat(table.columnWithName("changed")).isNotNull();
+        assertThat(table.columnWithName("instant")).isNotNull();
     }
 
     @Test
-    @FixFor("DBZ-1233")
+    @FixFor({ "DBZ-1233", "DBZ-4833" })
     public void shouldParseCheckTableSomeOtherKeyword() {
-        String[] otherKeywords = new String[]{ "cache", "close", "des_key_file", "end", "export", "flush", "found",
+        List<String> otherKeywords = Collect.arrayListOf("cache", "close", "des_key_file", "end", "export", "flush", "found",
                 "general", "handler", "help", "hosts", "install", "mode", "next", "open", "relay", "reset", "slow",
-                "soname", "traditional", "triggers", "uninstall", "until", "use_frm", "user_resources" };
-        for (String keyword : otherKeywords) {
-            String ddl = "create table t_" + keyword + "( " + keyword + " varchar(256))";
-            parser.parse(ddl, tables);
-            assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
-            final Table table = tables.forTable(null, null, "t_" + keyword);
-            assertThat(table).isNotNull();
-            assertThat(table.columnWithName(keyword)).isNotNull();
-        }
+                "soname", "traditional", "triggers", "uninstall", "until", "use_frm", "user_resources", "lag", "lead",
+                "first_value", "last_value", "cume_dist", "dense_rank", "percent_rank", "rank", "row_number",
+                "nth_value", "ntile");
+
+        String columnDefs = otherKeywords.stream().map(m -> m + " varchar(256)").collect(Collectors.joining(", "));
+        String ddl = "create table t_keywords(" + columnDefs + ");";
+
+        parser.parse(ddl, tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+        final Table table = tables.forTable(null, null, "t_keywords");
+        assertThat(table).isNotNull();
+        otherKeywords.stream().forEach(f -> assertThat(table.columnWithName(f)).isNotNull());
     }
 
     @Test
@@ -1853,7 +1993,7 @@ public class MySqlAntlrDdlParserTest {
     }
 
     @Test
-    @FixFor("DBZ-169")
+    @FixFor({ "DBZ-169", "DBZ-4503" })
     public void shouldParseCreateAndAlterWithOnUpdate() {
         String ddl = "CREATE TABLE customers ( "
                 + "id INT PRIMARY KEY NOT NULL, "
@@ -1867,7 +2007,7 @@ public class MySqlAntlrDdlParserTest {
                 + "ADD action tinyint(3) unsigned NOT NULL FIRST,"
                 + "ADD revision int(10) unsigned NOT NULL AFTER action,"
                 + "ADD changed_on DATETIME NOT NULL DEFAULT NOW() AFTER revision,"
-                + "ADD PRIMARY KEY (id, revision);";
+                + "ADD PRIMARY KEY (ID, revision);";
         parser.parse(ddl, tables);
         assertThat(tables.size()).isEqualTo(2);
         assertThat(listener.total()).isEqualTo(3);
@@ -1896,6 +2036,39 @@ public class MySqlAntlrDdlParserTest {
         assertThat(t.columnWithName("changed_on").position()).isEqualTo(3);
         assertThat(t.columnWithName("id").position()).isEqualTo(4);
         assertThat(t.columnWithName("name").position()).isEqualTo(5);
+
+        parser.parse("ALTER TABLE `CUSTOMERS_HISTORY` DROP COLUMN ID", tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+        t = tables.forTable(new TableId(null, null, "CUSTOMERS_HISTORY"));
+        assertThat(t.primaryKeyColumnNames().size()).isEqualTo(1);
+    }
+
+    @Test
+    @FixFor("DBZ-4786")
+    public void shouldParseCreateAndRemoveTwiceOrDoesNotExist() {
+        String ddl = "CREATE TABLE customers ( "
+                + "id INT PRIMARY KEY NOT NULL, "
+                + "name VARCHAR(30) NOT NULL, "
+                + "PRIMARY KEY (id) );";
+        parser.parse(ddl, tables);
+        assertThat(tables.size()).isEqualTo(1);
+        assertThat(listener.total()).isEqualTo(1);
+
+        Table t = tables.forTable(new TableId(null, null, "customers"));
+        assertThat(t).isNotNull();
+        assertThat(t.retrieveColumnNames()).containsExactly("id", "name");
+        assertThat(t.primaryKeyColumnNames()).containsExactly("id");
+
+        parser.parse("ALTER TABLE customers DROP COLUMN name", tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+        t = tables.forTable(new TableId(null, null, "customers"));
+        assertThat(t.columnWithName("NAME")).isEqualTo(null);
+
+        parser.parse("ALTER TABLE customers DROP COLUMN name", tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+
+        parser.parse("ALTER TABLE customers DROP COLUMN not_exists", tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
     }
 
     @Test

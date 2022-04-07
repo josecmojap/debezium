@@ -24,6 +24,9 @@ import org.apache.kafka.common.config.ConfigDef.Importance;
 import org.apache.kafka.common.config.ConfigDef.Type;
 import org.apache.kafka.common.config.ConfigDef.Width;
 import org.apache.kafka.connect.data.SchemaBuilder;
+import org.apache.kafka.connect.data.Struct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import io.debezium.config.Field.ValidationOutput;
 import io.debezium.connector.AbstractSourceInfo;
@@ -33,8 +36,10 @@ import io.debezium.data.Envelope.Operation;
 import io.debezium.heartbeat.Heartbeat;
 import io.debezium.relational.CustomConverterRegistry;
 import io.debezium.relational.history.KafkaDatabaseHistory;
+import io.debezium.schema.DataCollectionId;
 import io.debezium.spi.converter.ConvertedField;
 import io.debezium.spi.converter.CustomConverter;
+import io.debezium.util.SchemaNameAdjuster;
 import io.debezium.util.Strings;
 
 /**
@@ -43,6 +48,9 @@ import io.debezium.util.Strings;
  * @author Gunnar Morling
  */
 public abstract class CommonConnectorConfig {
+    public static final String TASK_ID = "task.id";
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(CommonConnectorConfig.class);
 
     /**
      * The set of predefined versions e.g. for source struct maker version
@@ -235,6 +243,59 @@ public abstract class CommonConnectorConfig {
         }
     }
 
+    /**
+     * The set of predefined SchemaNameAdjustmentMode options
+     */
+    public enum SchemaNameAdjustmentMode implements EnumeratedValue {
+
+        /**
+         * Do not adjust names
+         */
+        NONE("none"),
+
+        /**
+         * Adjust names for compatibility with Avro
+         */
+        AVRO("avro");
+
+        private final String value;
+
+        SchemaNameAdjustmentMode(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public String getValue() {
+            return value;
+        }
+
+        public SchemaNameAdjuster createAdjuster() {
+            if (this == SchemaNameAdjustmentMode.AVRO) {
+                return SchemaNameAdjuster.create();
+            }
+            return SchemaNameAdjuster.NO_OP;
+        }
+
+        /**
+         * Determine if the supplied values is one of the predefined options
+         *
+         * @param value the configuration property value ; may not be null
+         * @return the matching option, or null if the match is not found
+         */
+        public static SchemaNameAdjustmentMode parse(String value) {
+            if (value == null) {
+                return null;
+            }
+            value = value.trim();
+            for (SchemaNameAdjustmentMode option : SchemaNameAdjustmentMode.values()) {
+                if (option.getValue().equalsIgnoreCase(value)) {
+                    return option;
+                }
+            }
+            return null;
+        }
+    }
+
     private static final String CONFLUENT_AVRO_CONVERTER = "io.confluent.connect.avro.AvroConverter";
     private static final String APICURIO_AVRO_CONVERTER = "io.apicurio.registry.utils.converter.AvroConverter";
 
@@ -417,8 +478,9 @@ public abstract class CommonConnectorConfig {
             .withWidth(Width.SHORT)
             .withImportance(Importance.LOW)
             .withValidation(CommonConnectorConfig::validateSkippedOperation)
-            .withDescription("The comma-separated list of operations to skip during streaming, defined as: 'c' for inserts/create; 'u' for updates; 'd' for deletes. "
-                    + "By default, no operations will be skipped.");
+            .withDescription(
+                    "The comma-separated list of operations to skip during streaming, defined as: 'c' for inserts/create; 'u' for updates; 'd' for deletes, 't' for truncates, and 'none' to indicate nothing skipped. "
+                            + "By default, no operations will be skipped.");
 
     public static final Field BINARY_HANDLING_MODE = Field.create("binary.handling.mode")
             .withDisplayName("Binary Handling")
@@ -430,6 +492,16 @@ public abstract class CommonConnectorConfig {
                     + "'bytes' represents binary data as byte array (default)"
                     + "'base64' represents binary data as base64-encoded string"
                     + "'hex' represents binary data as hex-encoded (base16) string");
+
+    public static final Field SCHEMA_NAME_ADJUSTMENT_MODE = Field.create("schema.name.adjustment.mode")
+            .withDisplayName("Schema Name Adjustment")
+            .withGroup(Field.createGroupEntry(Field.Group.CONNECTOR, 7))
+            .withEnum(SchemaNameAdjustmentMode.class, SchemaNameAdjustmentMode.AVRO)
+            .withWidth(Width.MEDIUM)
+            .withImportance(Importance.LOW)
+            .withDescription("Specify how schema names should be adjusted for compatibility with the message converter used by the connector, including:"
+                    + "'avro' replaces the characters that cannot be used in the Avro type name with underscore (default)"
+                    + "'none' does not apply any adjustment");
 
     public static final Field QUERY_FETCH_SIZE = Field.create("query.fetch.size")
             .withDisplayName("Query fetch size")
@@ -468,6 +540,17 @@ public abstract class CommonConnectorConfig {
             .withDefault("${database.server.name}.transaction")
             .withDescription(
                     "The name of the transaction metadata topic. The placeholder ${database.server.name} can be used for referring to the connector's logical name; defaults to ${database.server.name}.transaction.");
+
+    public static final Field CUSTOM_RETRIABLE_EXCEPTION = Field.createInternal("custom.retriable.exception")
+            .withDisplayName("Regular expression to match the exception message.")
+            .withType(Type.STRING)
+            .withGroup(Field.createGroupEntry(Field.Group.CONNECTOR_ADVANCED, 999))
+            .withWidth(Width.MEDIUM)
+            .withImportance(Importance.LOW)
+            .withDescription("Provide a temporary workaround for an error that should be retriable."
+                    + " If set a stacktrace of non-retriable exception is traversed and messages are"
+                    + " matched against this regular expression. If matched the error is changed to retriable.")
+            .withDefault(false);
 
     protected static final ConfigDefinition CONFIG_DEFINITION = ConfigDefinition.editor()
             .connector(
@@ -517,9 +600,11 @@ public abstract class CommonConnectorConfig {
     private final EventProcessingFailureHandlingMode eventProcessingFailureHandlingMode;
     private final CustomConverterRegistry customConverterRegistry;
     private final BinaryHandlingMode binaryHandlingMode;
+    private final SchemaNameAdjustmentMode schemaNameAdjustmentMode;
     private final String signalingDataCollection;
     private final EnumSet<Operation> skippedOperations;
     private final String transactionTopic;
+    private final String taskId;
 
     protected CommonConnectorConfig(Configuration config, String logicalName, int defaultSnapshotFetchSize) {
         this.config = config;
@@ -538,6 +623,7 @@ public abstract class CommonConnectorConfig {
         this.queryFetchSize = config.getInteger(QUERY_FETCH_SIZE);
         this.incrementalSnapshotChunkSize = config.getInteger(INCREMENTAL_SNAPSHOT_CHUNK_SIZE);
         this.incrementalSnapshotAllowSchemaChanges = config.getBoolean(INCREMENTAL_SNAPSHOT_ALLOW_SCHEMA_CHANGES);
+        this.schemaNameAdjustmentMode = SchemaNameAdjustmentMode.parse(config.getString(SCHEMA_NAME_ADJUSTMENT_MODE));
         this.sourceInfoStructMaker = getSourceInfoStructMaker(Version.parse(config.getString(SOURCE_STRUCT_MAKER_VERSION)));
         this.sanitizeFieldNames = config.getBoolean(SANITIZE_FIELD_NAMES) || isUsingAvroConverter(config);
         this.shouldProvideTransactionMetadata = config.getBoolean(PROVIDE_TRANSACTION_METADATA);
@@ -547,12 +633,16 @@ public abstract class CommonConnectorConfig {
         this.signalingDataCollection = config.getString(SIGNAL_DATA_COLLECTION);
         this.skippedOperations = determineSkippedOperations(config);
         this.transactionTopic = config.getString(TRANSACTION_TOPIC).replace("${database.server.name}", logicalName);
+        this.taskId = config.getString(TASK_ID);
     }
 
     private static EnumSet<Envelope.Operation> determineSkippedOperations(Configuration config) {
         String operations = config.getString(SKIPPED_OPERATIONS);
 
         if (operations != null) {
+            if (operations.trim().equalsIgnoreCase("none")) {
+                return EnumSet.noneOf(Envelope.Operation.class);
+            }
             return EnumSet.copyOf(Arrays.stream(operations.split(","))
                     .map(String::trim)
                     .map(Operation::forCode)
@@ -761,24 +851,36 @@ public abstract class CommonConnectorConfig {
         return count;
     }
 
-    private static int validateSkippedOperation(Configuration config, Field field, ValidationOutput problems) {
+    protected static int validateSkippedOperation(Configuration config, Field field, ValidationOutput problems) {
         String operations = config.getString(field);
 
-        if (operations == null) {
+        if (operations == null || "none".equals(operations)) {
             return 0;
         }
 
+        boolean noneSpecified = false;
+        boolean operationsSpecified = false;
         for (String operation : operations.split(",")) {
             switch (operation.trim()) {
+                case "none":
+                    noneSpecified = true;
+                    continue;
                 case "r":
                 case "c":
                 case "u":
                 case "d":
+                case "t":
+                    operationsSpecified = true;
                     continue;
                 default:
                     problems.accept(field, operation, "Invalid operation");
                     return 1;
             }
+        }
+
+        if (noneSpecified && operationsSpecified) {
+            problems.accept(field, "none", "'none' cannot be specified with other skipped operation types");
+            return 1;
         }
 
         return 0;
@@ -813,7 +915,41 @@ public abstract class CommonConnectorConfig {
         return binaryHandlingMode;
     }
 
+    public SchemaNameAdjustmentMode schemaNameAdjustmentMode() {
+        return schemaNameAdjustmentMode;
+    }
+
     public String getSignalingDataCollectionId() {
         return signalingDataCollection;
+    }
+
+    public Optional<String[]> parseSignallingMessage(Struct value) {
+        final Struct after = value.getStruct(Envelope.FieldName.AFTER);
+        if (after == null) {
+            LOGGER.warn("After part of signal '{}' is missing", value);
+            return Optional.empty();
+        }
+        List<org.apache.kafka.connect.data.Field> fields = after.schema().fields();
+        if (fields.size() != 3) {
+            LOGGER.warn("The signal event '{}' should have 3 fields but has {}", after, fields.size());
+            return Optional.empty();
+        }
+        return Optional.of(new String[]{
+                after.getString(fields.get(0).name()),
+                after.getString(fields.get(1).name()),
+                after.getString(fields.get(2).name())
+        });
+    }
+
+    public boolean isSignalDataCollection(DataCollectionId dataCollectionId) {
+        return signalingDataCollection != null && signalingDataCollection.equals(dataCollectionId.identifier());
+    }
+
+    public Optional<String> customRetriableException() {
+        return Optional.ofNullable(config.getString(CUSTOM_RETRIABLE_EXCEPTION));
+    }
+
+    public String getTaskId() {
+        return taskId;
     }
 }

@@ -26,7 +26,6 @@ For more information, see xref:options-for-applying-the-transformation-selective
 
 A connector can capture changes in more than one outbox table only if each outbox table has the same structure.
 
-
 See link:https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/[Reliable Microservices Data Exchange With the Outbox Pattern] to learn about why the outbox pattern is useful and how it works.
 
 ifdef::community[]
@@ -35,8 +34,9 @@ endif::community[]
 
 [NOTE]
 ====
-This SMT does *not* support the MongoDB connector;
-please use the xref:transformations/mongodb-outbox-event-router.adoc[MongoDB outbox event router] SMT with that connector.
+The outbox event router SMT is not compatible with the MongoDB connector.
+
+MongoDB users can run the {link-prefix}:{link-mongodb-outbox-event-router}#mongodb-outbox-event-router[MongoDB outbox event router SMT].
 ====
 
 ifdef::product[]
@@ -45,8 +45,10 @@ The following topics provide details:
 * xref:example-of-a-debezium-outbox-message[]
 * xref:outbox-table-structure-expected-by-debezium-outbox-event-router-smt[]
 * xref:basic-debezium-outbox-event-router-smt-configuration[]
+* xref:options-for-applying-the-outbox-event-router-transformation-selectively[]
 * xref:using-avro-as-the-payload-format-in-debezium-outbox-messages[]
 * xref:emitting-additional-fields-in-debezium-outbox-messages[]
+* xref:expanding-escaped-json-string-as-json[]
 * xref:options-for-configuring-outbox-event-router-transformation[]
 endif::product[]
 
@@ -56,7 +58,7 @@ endif::product[]
 [[example-outbox-message]]
 == Example outbox message
 
-To learn about how to configure the {prodname} outbox event router SMT, consider the following example of a {prodname} outbox message:
+To understand how the {prodname} outbox event router SMT is configured, review the following example of a {prodname} outbox message:
 
 [source,javascript,indent=0]
 ----
@@ -135,7 +137,7 @@ payload       | jsonb                  |
 |`id`
 |Contains the unique ID of the event. In an outbox message, this value is a header. You can use this ID, for example, to remove duplicate messages. +
  +
-To obtain the unique ID of the event from a different outbox table column, set the xref:outbox-event-router-property-table-field-event-id[`table.field.event.id` SMT option] in the connector configuration.
+To obtain the unique ID of the event from a different outbox table column, set the xref:outbox-event-router-property-table-field-event-id[`table.field.event.id`]  SMT option in the connector configuration.
 
 |[[route-by-field-example]]`aggregatetype`
 |Contains a value that the SMT appends to the name of the topic to which the connector emits an outbox message. The default behavior is that this value replaces the default `pass:[${routedByValue}]` variable in the xref:outbox-event-router-property-route-topic-replacement[`route.topic.replacement`] SMT option. +
@@ -146,7 +148,7 @@ In the second record, the value in the `aggregatetype` column is `orders`.
 The connector emits the first record to the `outbox.event.customers` topic.
 The connector emits the second record to the `outbox.event.orders` topic. +
  +
-To obtain this value from a different outbox table column, set the xref:outbox-event-router-property-route-by-field[`route.by.field` SMT option] in the connector configuration.
+To obtain this value from a different outbox table column, set the xref:outbox-event-router-property-route-by-field[`route.by.field`] SMT option in the connector configuration.
 
 |`aggregateid`
 |Contains the event key, which provides an ID for the payload.
@@ -162,10 +164,10 @@ By default, the Kafka message value is solely comprised of the `payload` value.
 However, if the outbox event is configured to include additional fields, the Kafka message value contains an envelope encapsulating both payload and the additional fields, and each field is represented separately.
 For more information, see xref:emitting-messages-with-additional-fields[Emitting messages with additional fields]. +
  +
-To obtain the event payload from a different outbox table column, set the xref:outbox-event-router-property-table-field-event-payload[`table.field.event.payload` SMT option] in the connector configuration.
+To obtain the event payload from a different outbox table column, set the xref:outbox-event-router-property-table-field-event-payload[`table.field.event.payload`] SMT option in the connector configuration.
 
 |Additional custom columns
-|Any additional columns from the outbox table can be xref:outbox-event-router-emitting-messages-with-additional-fields[added to outbox events] either within the payload section or as a message header. +
+|Any additional columns from the outbox table can be xref:emitting-messages-with-additional-fields[added to outbox events] either within the payload section or as a message header. +
  +
 One example could be a column `eventType` which conveys a user-defined value that helps to categorize or organize events.
 
@@ -195,10 +197,9 @@ In addition to the change event messages that a {prodname} connector emits when 
 Because the structure of these other messages differs from the structure of the change event messages that the SMT is designed to process, it's best to configure the connector to selectively apply the SMT, so that it processes only the intended data change messages.
 You can use one of the following methods to configure the connector to apply the SMT selectively:
 
-* {link-prefix}:{link-smt-predicates}#applying-transformation-selectively[Configure an SMT predicate for the transformation].
-* Use the xref:outbox-event-router-property-route-topic-regex[route.topic.regex] configuration option for the SMT.
+* xref:{link-smt-predicates}#applying-transformation-selectively[Configure an SMT predicate for the transformation].
+* Use the xref:outbox-event-router-property-route-topic-regex[`route.topic.regex`] configuration option for the SMT.
 
-ifdef::community[]
 // Type: concept
 // Title: Using Avro as the payload format in {prodname} outbox messages
 // ModuleID: using-avro-as-the-payload-format-in-debezium-outbox-messages
@@ -238,7 +239,7 @@ value.converter.delegate.converter.type.schemas.enable=false
 
 The delegate `Converter` implementation is specified by the `delegate.converter.type` option.
 If any extra configuration options are needed by the converter, they can also be specified, such as the disablement of schemas shown above using `schemas.enable=false`.
-endif::community[]
+
 
 // Type: concept
 // Title: Emitting additional fields in {prodname} outbox messages
@@ -299,13 +300,14 @@ being deduced from the JSON document itself. That way the result in Kafka messag
 }
 ----
 
-To enable this transformation, you have to set the xref:outbox-event-router-property-table-expand-json-payload[`table.expand.json.payload`] to true like below:
+To enable this transformation, you have to set the xref:outbox-event-router-property-table-expand-json-payload[`table.expand.json.payload`] to true and use the `StringConverter` like below:
 
 [source]
 ----
 transforms=outbox,...
 transforms.outbox.type=io.debezium.transforms.outbox.EventRouter
 transforms.outbox.table.expand.json.payload=true
+value.converter=org.apache.kafka.connect.storage.StringConverter
 ----
 
 // Type: reference
@@ -368,7 +370,9 @@ This option is deprecated, use xref:outbox-event-router-property-table-field-eve
 |[[outbox-event-router-property-table-expand-json-payload]]<<outbox-event-router-property-table-expand-json-payload, `table.expand.json.payload`>>
 |`false`
 |Table
-a|Specifies whether the JSON expansion of a String payload should be done. If no content found or in case of parsing error, the content is kept "as is".
+a|Specifies whether the JSON expansion of a String payload should be done. If no content found or in case of parsing error, the content is kept "as is". +
+ +
+Fore more details, please see the xref:expanding-escaped-json-string-as-json[expanding escaped json] section.
 
 |[[outbox-event-router-property-table-fields-additional-placement]]<<outbox-event-router-property-table-fields-additional-placement, `table.fields.additional.placement`>>
 |

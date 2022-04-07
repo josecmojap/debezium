@@ -103,6 +103,28 @@ CREATE TABLE CustomerTable (
     Address varchar(60),
     Phone varchar(24)
  ) ENGINE = CONNECT TABLE_TYPE = ODBC;
+
+CREATE TABLE `daily_intelligences`(
+`id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '',
+`partner_code` varchar(32) DEFAULT NULL COMMENT '',
+`text` LONGTEXT DEFAULT NULL COMMENT '',
+`monitor_time` TIMESTAMP DEFAULT NULL COMMENT '',
+`gmt_modify` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '',
+`gmt_create` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '',
+PRIMARY KEY (`id`)
+) ENGINE=innodb DEFAULT CHAR SET=utf8 COMMENT '';
+
+CREATE TABLE `t_test_curdate` (
+`id` int(11) NOT NULL AUTO_INCREMENT,
+`c1` datetime NOT NULL DEFAULT CAST(CURRENT_TIMESTAMP() as DATE) COMMENT 'error test',
+PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `t_test_curdate` (
+`id` int(11) NOT NULL AUTO_INCREMENT,
+`c1` datetime NOT NULL DEFAULT CURDATE() COMMENT 'error test',
+PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 #end
 #begin
 -- Rename table
@@ -221,6 +243,11 @@ BEGIN
         INSERT IGNORE INTO user_platform_badge (platform_badge_id, user_id) VALUES (3, NEW.student_id);
     END IF;
 END
+#end
+#begin
+-- Create trigger 6
+-- delimiter //
+create or replace trigger trg_my1 before delete on test.t1 for each row begin insert into log_table values ("delete row from test.t1"); insert into t4 values (old.col1, old.col1 + 5, old.col1 + 7); end; -- //-- delimiter ;
 #end
 #begin
 -- Create view
@@ -342,6 +369,61 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = error_text;
   END IF;
 END -- //-- delimiter ;
+#end
+#begin
+CREATE DEFINER=`bettingservice`@`stage-us-nj-app%` PROCEDURE `AggregatePlayerFactDaily`()
+BEGIN
+    DECLARE CID_min BIGINT;
+    DECLARE CID_max BIGINT;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+BEGIN
+    SHOW ERRORS;
+ROLLBACK;
+END;
+
+SELECT LastID+1 INTO CID_min FROM AggregateStatus
+WHERE TableName = 'Combination_Transaction_Player_Fact';
+SELECT Id INTO CID_max FROM Combination_Transaction ORDER BY Id DESC LIMIT 1;
+
+START TRANSACTION;
+UPDATE AggregateStatus SET LastId = CID_max, LastUpdated = CURRENT_TIMESTAMP
+WHERE TableName = 'Combination_Transaction_Player_Fact';
+
+INSERT INTO Combination_Transaction_Player_Fact
+SELECT
+    NULL `Id`,
+    CT.Player_UID,
+    CT.Tx_Type `Type`,
+    DATE(BT.Timestamp) `Date`,
+    SUM(CT.Real_Amount) `Real_Amount`,
+    SUM(CT.Bonus_Amount) `Bonus_Amount`,
+    BT.Currency_UID,
+    COUNT(CT.Id) Tx_Count,
+    SUM(IF(CT.Real_Amount>0,1,0)) `Real_Count`,
+    SUM(IF(CT.Bonus_Amount>0,1,0)) `Bonus_Count`
+FROM Combination_Transaction CT
+    LEFT JOIN Betting_Transaction BT ON CT.Betting_Tx_ID = BT.ID
+WHERE CT.Id BETWEEN CID_min
+  AND CID_max
+GROUP BY CT.Player_UID, CT.Tx_Type, DATE(BT.Timestamp)
+ON DUPLICATE KEY UPDATE
+                     Currency_UID = VALUES(Currency_UID),
+                     Tx_Count     = Tx_Count + VALUES(Tx_Count),
+                     Real_Amount  = Real_Amount + VALUES(Real_Amount),
+                     Bonus_Amount = Bonus_Amount + VALUES(Bonus_Amount),
+                     Real_Count   = Real_Count + VALUES(Real_Count),
+                     Bonus_Count  = Bonus_Count + VALUES(Bonus_Count);
+COMMIT;
+END
+#end
+#begin
+-- delimiter //
+CREATE PROCEDURE set_unique_check()
+BEGIN
+    SET unique_checks=off;
+    SET unique_checks=on;
+END; -- //-- delimiter ;
 #end
 #begin
 -- Create Role

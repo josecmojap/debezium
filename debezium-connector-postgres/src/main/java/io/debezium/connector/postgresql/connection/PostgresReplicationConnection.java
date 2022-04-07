@@ -9,6 +9,7 @@ package io.debezium.connector.postgresql.connection;
 import static java.lang.Math.toIntExact;
 
 import java.nio.ByteBuffer;
+import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.SQLWarning;
@@ -36,11 +37,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.debezium.DebeziumException;
-import io.debezium.config.Configuration;
 import io.debezium.connector.postgresql.PostgresConnectorConfig;
 import io.debezium.connector.postgresql.PostgresSchema;
 import io.debezium.connector.postgresql.TypeRegistry;
 import io.debezium.connector.postgresql.spi.SlotCreationResult;
+import io.debezium.jdbc.JdbcConfiguration;
 import io.debezium.jdbc.JdbcConnection;
 import io.debezium.jdbc.JdbcConnectionException;
 import io.debezium.relational.RelationalTableFilters;
@@ -64,7 +65,7 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
     private final PostgresConnectorConfig.AutoCreateMode publicationAutocreateMode;
     private final PostgresConnectorConfig.LogicalDecoder plugin;
     private final boolean dropSlotOnClose;
-    private final PostgresConnectorConfig originalConfig;
+    private final PostgresConnectorConfig connectorConfig;
     private final Duration statusUpdateInterval;
     private final MessageDecoder messageDecoder;
     private final TypeRegistry typeRegistry;
@@ -104,9 +105,9 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
                                           TypeRegistry typeRegistry,
                                           Properties streamParams,
                                           PostgresSchema schema) {
-        super(config.getJdbcConfig(), PostgresConnection.FACTORY, null, PostgresReplicationConnection::defaultSettings, "\"", "\"");
+        super(addDefaultSettings(config.getJdbcConfig()), PostgresConnection.FACTORY, null, null, "\"", "\"");
 
-        this.originalConfig = config;
+        this.connectorConfig = config;
         this.slotName = slotName;
         this.publicationName = publicationName;
         this.tableFilter = tableFilter;
@@ -121,8 +122,18 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
         this.hasInitedSlot = false;
     }
 
+    private static JdbcConfiguration addDefaultSettings(JdbcConfiguration configuration) {
+        // first copy the parent's default settings...
+        // then set some additional replication specific settings
+        return JdbcConfiguration.adapt(PostgresConnection.addDefaultSettings(configuration)
+                .edit()
+                .with("replication", "database")
+                .with("preferQueryMode", "simple") // replication protocol only supports simple query mode
+                .build());
+    }
+
     private ServerInfo.ReplicationSlot getSlotInfo() throws SQLException, InterruptedException {
-        try (PostgresConnection connection = new PostgresConnection(originalConfig.getJdbcConfig())) {
+        try (PostgresConnection connection = new PostgresConnection(connectorConfig.getJdbcConfig())) {
             return connection.readReplicationSlotInfo(slotName, plugin.getPostgresPluginName());
         }
     }
@@ -133,10 +144,15 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
         if (PostgresConnectorConfig.LogicalDecoder.PGOUTPUT.equals(plugin)) {
             LOGGER.info("Initializing PgOutput logical decoder publication");
             try {
+                // Unless the autocommit is disabled the SELECT publication query will stay running
+                Connection conn = pgConnection();
+                conn.setAutoCommit(false);
+
                 String selectPublication = String.format("SELECT COUNT(1) FROM pg_publication WHERE pubname = '%s'", publicationName);
-                try (Statement stmt = pgConnection().createStatement(); ResultSet rs = stmt.executeQuery(selectPublication)) {
+                try (Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery(selectPublication)) {
                     if (rs.next()) {
                         Long count = rs.getLong(1);
+                        // Close eagerly as the transaction might stay running
                         if (count == 0L) {
                             LOGGER.info("Creating new publication '{}' for plugin '{}'", publicationName, plugin);
                             switch (publicationAutocreateMode) {
@@ -175,6 +191,8 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
                         }
                     }
                 }
+                conn.commit();
+                conn.setAutoCommit(true);
             }
             catch (SQLException e) {
                 throw new JdbcConnectionException(e);
@@ -293,8 +311,8 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
             LOGGER.debug("starting streaming from LSN '{}'", lsn);
         }
 
-        int maxRetries = config().getInteger(PostgresConnectorConfig.MAX_RETRIES);
-        int delay = config().getInteger(PostgresConnectorConfig.RETRY_DELAY_MS);
+        final int maxRetries = connectorConfig.maxRetries();
+        final Duration delay = connectorConfig.retryDelay();
         int tryCount = 0;
         while (true) {
             try {
@@ -310,7 +328,7 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
                 }
                 else {
                     LOGGER.warn(message + ", waiting for {} ms and retrying, attempt number {} over {}", delay, tryCount, maxRetries);
-                    final Metronome metronome = Metronome.sleeper(Duration.ofMillis(delay), Clock.SYSTEM);
+                    final Metronome metronome = Metronome.sleeper(delay, Clock.SYSTEM);
                     metronome.pause();
                 }
             }
@@ -622,7 +640,7 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
         }
         if (dropSlotOnClose && dropSlot) {
             // we're dropping the replication slot via a regular - i.e. not a replication - connection
-            try (PostgresConnection connection = new PostgresConnection(originalConfig.getJdbcConfig())) {
+            try (PostgresConnection connection = new PostgresConnection(connectorConfig.getJdbcConfig())) {
                 connection.dropReplicationSlot(slotName);
             }
             catch (Throwable e) {
@@ -636,14 +654,6 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
         close(false);
         // Don't re-execute initial commands on reconnection
         connection(false);
-    }
-
-    protected static void defaultSettings(Configuration.Builder builder) {
-        // first copy the parent's default settings...
-        PostgresConnection.defaultSettings(builder);
-        // then set some additional replication specific settings
-        builder.with("replication", "database")
-                .with("preferQueryMode", "simple"); // replication protocol only supports simple query mode
     }
 
     protected static class ReplicationConnectionBuilder implements Builder {

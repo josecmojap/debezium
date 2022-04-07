@@ -8,6 +8,7 @@ Adham
 Adrian Kreuziger
 Ahmed Eljami
 Akshath Patkar
+Aleksejs Sibanovs
 Alex Mansell
 Alex Soto
 Alexander Iskuskov
@@ -25,6 +26,7 @@ Andrew Garrett
 Andrew Tongen
 Andrey Ignatenko
 Andrey Pustovetov
+Andrey Savchuk
 Andrey Yegorov
 Andy Teijelo
 Anisha Mohanty
@@ -65,13 +67,16 @@ Chris Cranford
 Chris Egerton
 Chris Riccomini
 Christian Posta
+Christian Stein
 Christopher Burch
 Christopher Sang
 Chuck Ha
 Claus Guttesen
+Clément Loiselet
 Cliff Wheadon
 Collin Van Dyck
 Cory Harper
+Cyprien Etienne
 Cyril Scetbon
 Daan Roosen
 Daniel Petisme
@@ -79,6 +84,7 @@ Dave Cramer
 Dave Cumberland
 David Chen
 David Feinblum
+David Haglund
 David Jerome
 David Leibovic
 David Seapy
@@ -90,6 +96,7 @@ Dennis Campagna
 Dennis Persson
 Derek Moore
 Dhrubajyoti G
+Dominique Chanet
 Duncan Sands
 Dushyant M
 Echo Xu
@@ -103,12 +110,14 @@ Eric Slep
 Eric Weaver
 Eric S. Kreiseir
 Erik Malm
+Ethan Zou
 Ewen Cheslack-Postava
 Fabian Aussems
 Fabian Martinez
 Fabio Cantarini
 Fahim Farook
 Faizan
+Farid Uyar
 Fatih Güçlü Akkaya
 Fándly Gergő
 Felix Eckhardt
@@ -129,8 +138,10 @@ Guy Pascarella
 Grzegorz Kołakowski
 Jacob Gminder
 Jan Hendrik Dolling
+Jason Schweier
 Jiabao Sun
 Juan Fiallo
+Hady Willi
 Hans-Peter Grahsl
 Harvey Yue
 Henryk Konsek
@@ -179,7 +190,9 @@ Jork Zijlstra
 Jorn Argelo
 Jos Huiting
 Jose Luis
+Jose Luis Sánchez
 Josh Arenberg
+Josh Ribera
 Josh Stanfield
 Joy Gao
 Juan Antonio Pedraza
@@ -199,6 +212,7 @@ Lairen Hightower
 Laurent Broudoux
 Leo Mei
 Lev Zemlyanov
+Li Mo
 Linh Nguyen Hoang
 Listman Gamboa
 Liu Hanlin
@@ -215,6 +229,7 @@ Marc Zbyszynski
 Mario Mueller
 Mariusz Strzelecki
 Mark Drilling
+Martin Medek
 Martin Sillence
 Matt Beary
 Matteo Capitanio
@@ -232,12 +247,17 @@ Mike Graham
 Mike Kamornikov
 Mincong Huang
 Mohamed Pudukulathan
+Mohammad Yousuf Minhaj Zia
 Moira Tagle
 Muhammad Sufyian
+Nansen
+Narz David
 Nathan Mills
+Nathan Smit
 Navdeep Agarwal
 Naveen Kumar KR
 Nayana Hettiarachchi
+Nenad Stojanovikj
 Nick Murray
 Niels Pardon
 Nikhil Benesch
@@ -248,11 +268,15 @@ Oliver Weiler
 Olivier Jacquemart
 Olivier Lemasle
 Omar Al-Safi
+Oren Elias
 Ori Popowski
 Orr Ganani
+Oscar Romero
 Patrick Chu
 Pavel Strashkin
 Paul Mellor
+Paul Tzen
+Paweł Malon
 Peng Lyu
 Peter Goransson
 Peter Junos
@@ -260,10 +284,12 @@ Peter Larsson
 Peter Urbanetz
 Philip Sanetra
 Plugaru Tudor
+Poonam Meghnani
 Pradeep Mamillapalli
 Prannoy Mittal
 Preethi Sadagopan
 pushpavanthar
+Qishang Zhong
 Raf Liwoch
 Raghava Ponnam
 Ram Satish
@@ -279,6 +305,7 @@ Sagar Rao
 Sahan Dilshan
 René Kerner
 Rich O'Connell
+Richard Kolkovich
 Robert Coup
 Robert Roldan
 Ruslan Gibaiev
@@ -292,6 +319,7 @@ Sayed Mohammad Hossein Torabi
 Scofield Xu
 Sara Fonseca
 Sean Rooney
+Sebastian Bruckner
 Sergei Morozov
 Shane Paul
 Sherafudheen PM
@@ -338,6 +366,7 @@ Victor Xiang
 Vivek Wassan
 Vladimir Osin
 Vojtech Juranek
+Vojtěch Juránek
 Wang-Yu-Chao
 WenChao Ke
 Wei Wu
@@ -354,6 +383,7 @@ Yang Yang
 yangsanity
 Yilong Chang
 Yiming Liu
+Yingying Tang
 Yoann Rodière
 Yossi Shirizli
 Yuan Zhang
@@ -366,3 +396,7 @@ Zoran Regvart
 李宗文
 陆杰
 Ünal Sürmeli
+魏南
+胡琴
+Snigdhajyoti Ghosh
+Andrei Isac

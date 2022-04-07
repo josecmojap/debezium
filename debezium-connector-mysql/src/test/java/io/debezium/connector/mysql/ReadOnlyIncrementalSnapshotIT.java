@@ -78,6 +78,7 @@ public class ReadOnlyIncrementalSnapshotIT extends IncrementalSnapshotIT {
                 .with(MySqlConnectorConfig.READ_ONLY_CONNECTION, true)
                 .with(KafkaSignalThread.SIGNAL_TOPIC, getSignalsTopic())
                 .with(KafkaSignalThread.BOOTSTRAP_SERVERS, kafka.brokerList())
+                .with(MySqlConnectorConfig.INCLUDE_SQL_QUERY, true)
                 .with(RelationalDatabaseConnectorConfig.MSG_KEY_COLUMNS, String.format("%s:%s", DATABASE.qualifiedTableName("a42"), "pk1,pk2,pk3,pk4"));
     }
 
@@ -108,7 +109,7 @@ public class ReadOnlyIncrementalSnapshotIT extends IncrementalSnapshotIT {
 
     @Test
     public void emptyHighWatermark() throws Exception {
-        Testing.Print.enable();
+        // Testing.Print.enable();
 
         populateTable();
         startConnector();
@@ -124,7 +125,7 @@ public class ReadOnlyIncrementalSnapshotIT extends IncrementalSnapshotIT {
 
     @Test
     public void filteredEvents() throws Exception {
-        Testing.Print.enable();
+        // Testing.Print.enable();
 
         populateTable();
         startConnector();
@@ -163,7 +164,7 @@ public class ReadOnlyIncrementalSnapshotIT extends IncrementalSnapshotIT {
 
     @Test
     public void inserts4Pks() throws Exception {
-        Testing.Print.enable();
+        // Testing.Print.enable();
 
         populate4PkTable();
         startConnector();
@@ -185,7 +186,7 @@ public class ReadOnlyIncrementalSnapshotIT extends IncrementalSnapshotIT {
 
     @Test
     public void insertsWithoutPks() throws Exception {
-        Testing.Print.enable();
+        // Testing.Print.enable();
 
         populate4WithoutPkTable();
         startConnector();
@@ -208,7 +209,7 @@ public class ReadOnlyIncrementalSnapshotIT extends IncrementalSnapshotIT {
     @Test(expected = ConnectException.class)
     @SkipWhenGtidModeIs(value = SkipWhenGtidModeIs.GtidMode.ON, reason = "Read only connection requires GTID_MODE to be ON")
     public void shouldFailIfGtidModeIsOff() throws Exception {
-        Testing.Print.enable();
+        // Testing.Print.enable();
         populateTable();
         AtomicReference<Throwable> exception = new AtomicReference<>();
         startConnector((success, message, error) -> exception.set(error));

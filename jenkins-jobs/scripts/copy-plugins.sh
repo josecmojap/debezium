@@ -6,7 +6,7 @@ PLUGIN_DIR="plugins"
 EXTRA_LIBS=""
 
 
-OPTS=$(getopt -o d:a:l:f:r:o:t:a: --long dir:,archive-urls:,libs:,dockerfile:,registry:,organisation:,tags:,auto-tag:,dest-login:,dest-pass:,img-output: -n 'parse-options' -- "$@")
+OPTS=$(getopt -o d:a:l:f:r:o:t:g: --long dir:,archive-urls:,libs:,dockerfile:,registry:,organisation:,tags:,auto-tag:,dest-login:,dest-pass:,img-output: -n 'parse-options' -- "$@")
 if [ $? != 0 ] ; then echo "Failed parsing options." >&2 ; exit 1 ; fi
 eval set -- "$OPTS"
 
@@ -20,7 +20,7 @@ while true; do
     -r | --registry )           REGISTRY=$2;                        shift; shift ;;
     -o | --organisation )       ORGANISATION=$2;                    shift; shift ;;
     -t | --tags )               TAGS=$2;                            shift; shift ;;
-    -a | --auto-tag )           AUTO_TAG=$2;                        shift; shift ;;
+    -g | --auto-tag )           AUTO_TAG=$2;                        shift; shift ;;
     --dest-login )              DEST_LOGIN=$2;                      shift; shift ;;
     --dest-pass )               DEST_PASS=$2;                       shift; shift ;;
     --img-output )              IMAGE_OUTPUT_FILE=$2;               shift; shift ;;
@@ -30,7 +30,7 @@ while true; do
   esac
 done
 
-if [ -z "${TAGS}" ] && [ "${AUTO_TAG}" = false ]; then
+if [ -z "${TAGS}" ] && [ "${AUTO_TAG}" = "false" ]; then
   echo "Cannot push image without tag." >&2 ; exit 1 ;
 fi
 
@@ -83,7 +83,7 @@ echo "[Build] Building $target"
 docker build . -t "$target"
 popd || exit
 
-if [ "${AUTO_TAG}" ] ; then
+if [ "${AUTO_TAG}" = "true" ] ; then
   echo "[Build] Pushing image ${target}"
   docker push ${target}
   [[ -z "${IMAGE_OUTPUT_FILE}" ]] || echo $target >> ${IMAGE_OUTPUT_FILE}

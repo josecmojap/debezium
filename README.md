@@ -114,7 +114,7 @@ You can skip all non-essential plug-ins (tests, integration tests, CheckStyle, f
 
     $ mvn clean verify -Dquick
 
-This provides the fastes way for solely producing the output artifacts, without running any of the QA related Maven plug-ins.
+This provides the fastest way for solely producing the output artifacts, without running any of the QA related Maven plug-ins.
 This comes in handy for producing connector JARs and/or archives as quickly as possible, e.g. for manual testing in Kafka Connect.
 
 ### Running tests of the Postgres connector using the wal2json or pgoutput logical decoding plug-ins
@@ -159,6 +159,18 @@ See [PostgreSQL on Amazon RDS](debezium-connector-postgres/RDS.md) for details o
 ### Running tests of the Oracle connector with a non-CDB database
 
     $ mvn clean install -pl debezium-connector-oracle -Poracle -Dinstantclient.dir=<path-to-instantclient> -Ddatabase.pdb.name=
+
+### Running the tests for MongoDB with oplog capturing from an IDE
+
+When running the test without maven, please make sure you pass the correct parameters to the execution. Look for the correct parameters in `.github/workflows/mongodb-oplog-workflow.yml` and
+append them to the JVM execution parameters, prefixing them with `debezium.test`. As the execution will happen outside of the lifecycle execution, you need to start the MongoDB container manually
+from the MongoDB connector directory
+
+    $ mvn docker:start -B -am -Passembly -Dcheckstyle.skip=true -Dformat.skip=true -Drevapi.skip -Dcapture.mode=oplog -Dversion.mongo.server=3.6 -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn -Dmaven.wagon.http.pool=false -Dmaven.wagon.httpconnectionManager.ttlSeconds=120 -Dcapture.mode=oplog -Dmongo.server=3.6
+
+The relevant portion of the line will look similar to the following:
+
+    java -ea -Ddebezium.test.capture.mode=oplog -Ddebezium.test.version.mongo.server=3.6 -Djava.awt.headless=true -Dconnector.mongodb.members.auto.discover=false -Dconnector.mongodb.name=mongo1 -DskipLongRunningTests=true [...]
 
 ## Contributing
 

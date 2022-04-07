@@ -19,6 +19,7 @@ import io.debezium.config.Field;
 import io.debezium.connector.base.ChangeEventQueue;
 import io.debezium.connector.common.BaseSourceTask;
 import io.debezium.connector.oracle.StreamingAdapter.TableNameCaseSensitivity;
+import io.debezium.jdbc.JdbcConfiguration;
 import io.debezium.pipeline.ChangeEventSourceCoordinator;
 import io.debezium.pipeline.DataChangeEvent;
 import io.debezium.pipeline.ErrorHandler;
@@ -49,9 +50,9 @@ public class OracleConnectorTask extends BaseSourceTask<OraclePartition, OracleO
     public ChangeEventSourceCoordinator<OraclePartition, OracleOffsetContext> start(Configuration config) {
         OracleConnectorConfig connectorConfig = new OracleConnectorConfig(config);
         TopicSelector<TableId> topicSelector = OracleTopicSelector.defaultSelector(connectorConfig);
-        SchemaNameAdjuster schemaNameAdjuster = SchemaNameAdjuster.create();
+        SchemaNameAdjuster schemaNameAdjuster = connectorConfig.schemaNameAdjustmentMode().createAdjuster();
 
-        Configuration jdbcConfig = connectorConfig.getJdbcConfig();
+        JdbcConfiguration jdbcConfig = connectorConfig.getJdbcConfig();
         jdbcConnection = new OracleConnection(jdbcConfig, () -> getClass().getClassLoader());
 
         validateRedoLogConfiguration();
@@ -82,11 +83,11 @@ public class OracleConnectorTask extends BaseSourceTask<OraclePartition, OracleO
                 .loggingContextSupplier(() -> taskContext.configureLoggingContext(CONTEXT_NAME))
                 .build();
 
-        errorHandler = new OracleErrorHandler(connectorConfig.getLogicalName(), queue);
+        errorHandler = new OracleErrorHandler(connectorConfig, queue);
 
         final OracleEventMetadataProvider metadataProvider = new OracleEventMetadataProvider();
 
-        EventDispatcher<TableId> dispatcher = new EventDispatcher<>(
+        EventDispatcher<OraclePartition, TableId> dispatcher = new EventDispatcher<>(
                 connectorConfig,
                 topicSelector,
                 schema,

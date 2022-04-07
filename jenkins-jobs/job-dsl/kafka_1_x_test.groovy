@@ -20,7 +20,7 @@ freeStyleJob('debezium-kafka-1.x-test') {
     }
 
     triggers {
-        cron('H 04 * * 1-5')
+        cron('H 04 * * *')
     }
 
     wrappers {
@@ -37,6 +37,7 @@ freeStyleJob('debezium-kafka-1.x-test') {
 
     logRotator {
         daysToKeep(7)
+        numToKeep(10)
     }
 
     steps {

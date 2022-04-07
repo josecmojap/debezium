@@ -269,6 +269,8 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
         assertNoConfigurationErrors(result, MongoDbConnectorConfig.SSL_ENABLED);
         assertNoConfigurationErrors(result, MongoDbConnectorConfig.SSL_ALLOW_INVALID_HOSTNAMES);
         assertNoConfigurationErrors(result, CommonConnectorConfig.TOMBSTONES_ON_DELETE);
+
+        assertNoConfigurationErrors(result, MongoDbConnectorConfig.CAPTURE_MODE);
     }
 
     @Test
@@ -639,6 +641,74 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
     }
 
     @Test
+    @FixFor("DBZ-4575")
+    public void shouldConsumeEventsOnlyFromIncludedDatabases() throws InterruptedException, IOException {
+
+        // Use the DB configuration to define the connector's configuration ...
+        config = TestHelper.getConfiguration().edit()
+                .with(MongoDbConnectorConfig.POLL_INTERVAL_MS, 10)
+                .with(MongoDbConnectorConfig.DATABASE_INCLUDE_LIST, "inc")
+                .with(MongoDbConnectorConfig.LOGICAL_NAME, "mongo")
+                .build();
+
+        // Set up the replication context for connections ...
+        context = new MongoDbTaskContext(config);
+
+        // Cleanup database
+        TestHelper.cleanDatabase(primary(), "inc");
+        TestHelper.cleanDatabase(primary(), "exc");
+
+        // Before starting the connector, add data to the databases ...
+        storeDocuments("inc", "simpletons", "simple_objects.json");
+        storeDocuments("exc", "restaurants", "restaurants1.json");
+
+        // Start the connector ...
+        start(MongoDbConnector.class, config);
+
+        // ---------------------------------------------------------------------------------------------------------------
+        // Consume all of the events due to startup and initialization of the database
+        // ---------------------------------------------------------------------------------------------------------------
+        SourceRecords records = consumeRecordsByTopic(6);
+        records.topics().forEach(System.out::println);
+        assertThat(records.recordsForTopic("mongo.inc.simpletons").size()).isEqualTo(6);
+        assertThat(records.recordsForTopic("mongo.exc.restaurants")).isNull();
+        assertThat(records.topics().size()).isEqualTo(1);
+        AtomicBoolean foundLast = new AtomicBoolean(false);
+        records.forEach(record -> {
+            // Check that all records are valid, and can be serialized and deserialized ...
+            validate(record);
+            verifyFromInitialSync(record, foundLast);
+            verifyReadOperation(record);
+        });
+        assertThat(foundLast.get()).isTrue();
+
+        // At this point, the connector has performed the initial sync and awaits changes ...
+
+        // ---------------------------------------------------------------------------------------------------------------
+        // Store more documents while the connector is still running
+        // ---------------------------------------------------------------------------------------------------------------
+        storeDocuments("exc", "restaurants", "restaurants2.json");
+        storeDocuments("inc", "restaurants", "restaurants2.json");
+
+        // Wait until we can consume the 4 documents we just added ...
+        SourceRecords records2 = consumeRecordsByTopic(4);
+        assertThat(records2.recordsForTopic("mongo.exc.restaurants")).isNull();
+        assertThat(records2.recordsForTopic("mongo.inc.restaurants").size()).isEqualTo(4);
+        assertThat(records2.topics().size()).isEqualTo(1);
+        records2.forEach(record -> {
+            // Check that all records are valid, and can be serialized and deserialized ...
+            validate(record);
+            verifyNotFromInitialSync(record);
+            verifyCreateOperation(record);
+            verifyNotFromTransaction(record);
+        });
+        // ---------------------------------------------------------------------------------------------------------------
+        // Stop the connector
+        // ---------------------------------------------------------------------------------------------------------------
+        stopConnector();
+    }
+
+    @Test
     @FixFor("DBZ-1767")
     public void shouldSupportDbRef() throws InterruptedException, IOException {
 
@@ -710,7 +780,7 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
     @FixFor("DBZ-865 and DBZ-1242")
     public void shouldConsumeEventsFromCollectionWithReplacedTopicName() throws InterruptedException, IOException {
         // This captures all logged messages, allowing us to verify log message was written.
-        final LogInterceptor logInterceptor = new LogInterceptor();
+        final LogInterceptor logInterceptor = new LogInterceptor(MongoDbSchema.class);
 
         // Use the DB configuration to define the connector's configuration ...
         config = TestHelper.getConfiguration().edit()
@@ -764,7 +834,7 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
     @FixFor("DBZ-1242")
     public void testEmptySchemaWarningAfterApplyingCollectionFilters() throws Exception {
         // This captures all logged messages, allowing us to verify log message was written.
-        final LogInterceptor logInterceptor = new LogInterceptor();
+        final LogInterceptor logInterceptor = new LogInterceptor(MongoDbSchema.class);
 
         // Use the DB configuration to define the connector's configuration...
         config = TestHelper.getConfiguration().edit()

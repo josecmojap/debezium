@@ -1385,7 +1385,7 @@ public class RecordsStreamProducerIT extends AbstractRecordsProducerTest {
     @Test
     @FixFor("DBZ-1565")
     public void shouldWarnOnMissingHeartbeatForFilteredEvents() throws Exception {
-        final LogInterceptor logInterceptor = new LogInterceptor();
+        final LogInterceptor logInterceptor = new LogInterceptor(PostgresStreamingChangeEventSource.class);
         startConnector(config -> config
                 .with(PostgresConnectorConfig.POLL_INTERVAL_MS, "50")
                 .with(PostgresConnectorConfig.TABLE_INCLUDE_LIST, "s1\\.b")
@@ -1441,7 +1441,7 @@ public class RecordsStreamProducerIT extends AbstractRecordsProducerTest {
         consumer.expects(1);
         executeAndWait(statement);
         assertWithTask(task -> {
-            Table tbl = ((PostgresConnectorTask) task).getTaskContext().schema().tableFor(TableId.parse("public.test_table"));
+            Table tbl = ((PostgresConnectorTask) task).getTaskContext().schema().tableFor(TableId.parse("public.test_table", false));
             assertEquals(Arrays.asList("pk", "text", "not_toast"), tbl.retrieveColumnNames());
         });
 
@@ -1477,7 +1477,7 @@ public class RecordsStreamProducerIT extends AbstractRecordsProducerTest {
         consumer.expects(1);
         executeAndWait(statement);
         assertWithTask(task -> {
-            Table tbl = ((PostgresConnectorTask) task).getTaskContext().schema().tableFor(TableId.parse("public.test_table"));
+            Table tbl = ((PostgresConnectorTask) task).getTaskContext().schema().tableFor(TableId.parse("public.test_table", false));
             assertEquals(Arrays.asList("pk", "not_toast"), tbl.retrieveColumnNames());
         });
     }
@@ -1521,7 +1521,7 @@ public class RecordsStreamProducerIT extends AbstractRecordsProducerTest {
         executeAndWait(statement);
         consumer.process(record -> {
             assertWithTask(task -> {
-                Table tbl = ((PostgresConnectorTask) task).getTaskContext().schema().tableFor(TableId.parse("public.test_table"));
+                Table tbl = ((PostgresConnectorTask) task).getTaskContext().schema().tableFor(TableId.parse("public.test_table", false));
                 assertEquals(Arrays.asList("pk", "text", "not_toast", "mandatory_text"), tbl.retrieveColumnNames());
             });
         });
@@ -2027,6 +2027,54 @@ public class RecordsStreamProducerIT extends AbstractRecordsProducerTest {
         SourceRecord truncateRecord = consumer.remove();
         assertNotNull(truncateRecord);
         VerifyRecord.isValidTruncate(truncateRecord);
+        assertTrue(consumer.isEmpty());
+    }
+
+    @Test
+    @SkipWhenDatabaseVersion(check = EqualityCheck.LESS_THAN, major = 11, reason = "TRUNCATE events only supported in PG11+ PGOUTPUT Plugin")
+    @SkipWhenDecoderPluginNameIsNot(value = SkipWhenDecoderPluginNameIsNot.DecoderPluginName.PGOUTPUT, reason = "Tests specifically that pgoutput handles TRUNCATE messages")
+    public void shouldProcessTruncateMessagesWhenSkippedOperationsIsSuppliedWithoutTruncate() throws Exception {
+        startConnector(builder -> builder
+                .with(PostgresConnectorConfig.SKIPPED_OPERATIONS, "u")
+                .with(PostgresConnectorConfig.TRUNCATE_HANDLING_MODE, PostgresConnectorConfig.TruncateHandlingMode.INCLUDE));
+        waitForStreamingToStart();
+
+        consumer = testConsumer(1);
+        executeAndWait("INSERT INTO test_table (text) values ('TRUNCATE TEST');");
+
+        SourceRecord record = consumer.remove();
+        assertEquals(TestHelper.topicName("public.test_table"), record.topic());
+        VerifyRecord.isValidInsert(record, PK_FIELD, 2);
+
+        consumer.expects(1);
+        TestHelper.execute("TRUNCATE TABLE public.test_table RESTART IDENTITY CASCADE;");
+        consumer.await(TestHelper.waitTimeForRecords(), TimeUnit.SECONDS);
+
+        assertFalse(consumer.isEmpty());
+        SourceRecord truncateRecord = consumer.remove();
+        assertNotNull(truncateRecord);
+        VerifyRecord.isValidTruncate(truncateRecord);
+        assertTrue(consumer.isEmpty());
+    }
+
+    @Test
+    @SkipWhenDatabaseVersion(check = EqualityCheck.LESS_THAN, major = 11, reason = "TRUNCATE events only supported in PG11+ PGOUTPUT Plugin")
+    @SkipWhenDecoderPluginNameIsNot(value = SkipWhenDecoderPluginNameIsNot.DecoderPluginName.PGOUTPUT, reason = "Tests specifically that pgoutput handles TRUNCATE messages")
+    public void shouldSkipTruncateMessagesWithSkipped() throws Exception {
+        startConnector(builder -> builder.with(PostgresConnectorConfig.SKIPPED_OPERATIONS, "t"));
+        waitForStreamingToStart();
+
+        consumer = testConsumer(1);
+        executeAndWait("INSERT INTO test_table (text) values ('TRUNCATE TEST');");
+
+        SourceRecord record = consumer.remove();
+        assertEquals(TestHelper.topicName("public.test_table"), record.topic());
+        VerifyRecord.isValidInsert(record, PK_FIELD, 2);
+
+        consumer.expects(0);
+        TestHelper.execute("TRUNCATE TABLE public.test_table RESTART IDENTITY CASCADE;");
+        consumer.await(TestHelper.waitTimeForRecords(), TimeUnit.SECONDS);
+
         assertTrue(consumer.isEmpty());
     }
 

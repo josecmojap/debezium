@@ -65,7 +65,7 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
         final PostgresConnectorConfig connectorConfig = new PostgresConnectorConfig(config);
         final TopicSelector<TableId> topicSelector = PostgresTopicSelector.create(connectorConfig);
         final Snapshotter snapshotter = connectorConfig.getSnapshotter();
-        final SchemaNameAdjuster schemaNameAdjuster = SchemaNameAdjuster.create();
+        final SchemaNameAdjuster schemaNameAdjuster = connectorConfig.schemaNameAdjustmentMode().createAdjuster();
 
         if (snapshotter == null) {
             throw new ConnectException("Unable to load snapshotter, if using custom snapshot mode, double check your settings");
@@ -163,7 +163,7 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
                     .loggingContextSupplier(() -> taskContext.configureLoggingContext(CONTEXT_NAME))
                     .build();
 
-            ErrorHandler errorHandler = new PostgresErrorHandler(connectorConfig.getLogicalName(), queue);
+            ErrorHandler errorHandler = new PostgresErrorHandler(connectorConfig, queue);
 
             final PostgresEventMetadataProvider metadataProvider = new PostgresEventMetadataProvider();
 
@@ -183,7 +183,7 @@ public class PostgresConnectorTask extends BaseSourceTask<PostgresPartition, Pos
                             default:
                                 break;
                         }
-                    });
+                    }, schemaNameAdjuster);
 
             final PostgresEventDispatcher<TableId> dispatcher = new PostgresEventDispatcher<>(
                     connectorConfig,

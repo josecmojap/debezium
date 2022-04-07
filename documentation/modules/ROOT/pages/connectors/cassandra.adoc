@@ -17,6 +17,8 @@ This connector is currently in incubating state, i.e. exact semantics, configura
 
 The Cassanadra connector can monitor a Cassandra cluster and record all row-level changes. The connector must be deployed locally on each node in the Cassandra cluster. The first time the connector connects to a Cassandra node, it performs a snapshot of all CDC-enabled tables in all keyspaces. The connector will also read the changes that are written to Cassandra commit logs and generates corresponding insert, update, and delete events. All events for each table are recorded in a separate kafka topic, where they can be consumed easily by applications and services.
 
+For information about the Cassandra versions that are compatible with this connector, see the link:https://debezium.io/releases/[{prodname} release overview].
+
 
 [[cassandra-overview]]
 == Overview
@@ -27,7 +29,7 @@ Since Cassandra 3.0, a http://cassandra.apache.org/doc/3.11.3/operating/cdc.html
 
 The Cassandra connector resides on each Cassandra node and monitors the `cdc_raw` directory for change. It processes all local commit log segments as they are detected, produces a change event for every row-level insert, update, and delete operations in the commit log, publishes all change events for each table in a separate Kafka topic, and finally deletes the commit log from the `cdc_raw` directory. This last step is important because once CDC is enabled, Cassandra itself cannot purge the commit logs. If the `cdc_free_space_in_mb` fills up, writes to CDC-enabled tables will be rejected.
 
-The connector is tolerant of failures. As the connector reads commit logs and produces events, it records each commit log segment's filename and position along with each event. If the connector stops for any reason (including communication failures, network problems, or crashes), upon restart it simply continues reading the commit log where it last left off. This includes snapshots: if the snapshot was not completed when the connector is stopped, upon restart it will begin a new snapshot. We'll talk later about how the connector behaves {link-prefix}:{link-cassandra-connector}#cassandra-when-things-go-wrong[when things go wrong].
+The connector is tolerant of failures. As the connector reads commit logs and produces events, it records each commit log segment's filename and position along with each event. If the connector stops for any reason (including communication failures, network problems, or crashes), upon restart it simply continues reading the commit log where it last left off. This includes snapshots: if the snapshot was not completed when the connector is stopped, upon restart it will begin a new snapshot. We'll talk later about how the connector behaves xref:{link-cassandra-connector}#cassandra-when-things-go-wrong[when things go wrong].
 
 [NOTE]
 ====
@@ -179,7 +181,7 @@ Please note that with the current schema evolution approach, the Cassandra conne
 [[cassandra-events]]
 === Events
 
-All data change events produced by the Cassandra connector have a key and a value, although the structure of the key and value depends on the table from which the change events originated (see {link-prefix}:{link-cassandra-connector}#cassandra-topic-names[Topic Names]).
+All data change events produced by the Cassandra connector have a key and a value, although the structure of the key and value depends on the table from which the change events originated (see xref:{link-cassandra-connector}#cassandra-topic-names[Topic Names]).
 
 [[cassandra-change-events-key]]
 ==== Change Event's Key
@@ -783,7 +785,7 @@ If a Cassandra table temporarily disables CDC and then re-enables it again after
 [[cassandra-deploying-a-connector]]
 == Deploying A Connector
 
-The Cassandra connector should be deployed each Cassandra node in a Cassandra cluster. The Cassandra connector Jar file takes in a cdc configuration (.properties) file. See {link-prefix}:{link-cassandra-connector}#cassandra-example-configuration[see example configurations] for reference.
+The Cassandra connector should be deployed each Cassandra node in a Cassandra cluster. The Cassandra connector Jar file takes in a cdc configuration (.properties) file. See xref:{link-cassandra-connector}#cassandra-example-configuration[see example configurations] for reference.
 
 [[cassandra-example-configuration]]
 === Example configuration
@@ -981,8 +983,11 @@ the offset will be flushed every time.
 
 |[[cassandra-property-max-queue-size-in-bytes]]<<cassandra-property-max-queue-size-in-bytes, `max.queue.size.in.bytes`>>
 |`0`
-|Long value for the maximum size in bytes of the blocking queue. The feature is disabled by default, it will be active if it's set with a positive long value.
-
+|A long integer value that specifies the maximum volume of the blocking queue in bytes.
+By default, volume limits are not specified for the blocking queue.
+To specify the number of bytes that the queue can consume, set this property to a positive long value. +
+If xref:cassandra-property-max-queue-size[`max.queue.size`] is also set, writing to the queue is blocked when the size of the queue reaches the limit specified by either property.
+For example, if you set `max.queue.size=1000`, and `max.queue.size.in.bytes=5000`, writing to the queue is blocked after the queue contains 1000 records, or after the volume of the records in the queue reaches 5000 bytes.
 
 |[[cassandra-property-poll-interval-ms]]<<cassandra-property-poll-interval-ms, `poll.interval.ms`>>
 |`1000`
@@ -1016,7 +1021,7 @@ refreshing the cached Cassandra table schemas.
 |[[cassandra-property-sanitize-field-names]]<<cassandra-property-sanitize-field-names, `sanitize.field.names`>>
 |`true` when connector configuration explicitly specifies the `key.converter` or `value.converter` parameters to use Avro, otherwise defaults to `false`.
 |Whether field names will be sanitized to adhere to Avro naming requirements.
-See {link-prefix}:{link-avro-serialization}#avro-naming[Avro naming] for more details.
+See xref:{link-avro-serialization}#avro-naming[Avro naming] for more details.
 
 |[[cassandra-property-skipped-operations]]<<cassandra-property-skipped-operations, `+skipped.operations+`>>
 |

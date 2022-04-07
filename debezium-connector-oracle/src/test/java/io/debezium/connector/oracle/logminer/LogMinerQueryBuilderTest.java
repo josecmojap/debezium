@@ -15,6 +15,7 @@ import static org.fest.assertions.Assertions.assertThat;
 
 import java.util.Iterator;
 
+import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestRule;
@@ -52,6 +53,8 @@ public class LogMinerQueryBuilderTest {
     private static final String OPERATION_CODES_LOB_ENABLED = "(1,2,3,9,10,11,29)";
     private static final String OPERATION_CODES_LOB_DISABLED = "(1,2,3)";
 
+    private OracleDatabaseSchema schema;
+
     /**
      * A template that defines the expected SQL output when the configuration specifies
      * {@code database.history.store.only.captured.tables.ddl} is {@code false}.
@@ -59,15 +62,16 @@ public class LogMinerQueryBuilderTest {
     private static final String LOG_MINER_CONTENT_QUERY_TEMPLATE1 = "SELECT SCN, SQL_REDO, OPERATION_CODE, TIMESTAMP, " +
             "XID, CSF, TABLE_NAME, SEG_OWNER, OPERATION, USERNAME, ROW_ID, ROLLBACK, RS_ID " +
             "FROM V$LOGMNR_CONTENTS WHERE SCN > ? AND SCN <= ? " +
-            "AND SRC_CON_NAME = '" + TestHelper.DATABASE + "' " +
+            "${systemTablePredicate}" +
             "AND ((" +
             "OPERATION_CODE IN (6,7,34,36) OR " +
             "(OPERATION_CODE = 5 AND USERNAME NOT IN ('SYS','SYSTEM') " +
             "AND INFO NOT LIKE 'INTERNAL DDL%' " +
+            "AND SRC_CON_NAME = '" + TestHelper.DATABASE + "' " +
             "AND (TABLE_NAME IS NULL OR TABLE_NAME NOT LIKE 'ORA_TEMP_%')) ) " +
             "OR (OPERATION_CODE IN ${operationCodes} " +
+            "AND SRC_CON_NAME = '" + TestHelper.DATABASE + "' " +
             "AND TABLE_NAME != '" + LogWriterFlushStrategy.LOGMNR_FLUSH_TABLE + "' " +
-            "${systemTablePredicate}" +
             "${schemaPredicate}" +
             "${tablePredicate}" +
             "))";
@@ -79,25 +83,38 @@ public class LogMinerQueryBuilderTest {
     private static final String LOG_MINER_CONTENT_QUERY_TEMPLATE2 = "SELECT SCN, SQL_REDO, OPERATION_CODE, TIMESTAMP, " +
             "XID, CSF, TABLE_NAME, SEG_OWNER, OPERATION, USERNAME, ROW_ID, ROLLBACK, RS_ID " +
             "FROM V$LOGMNR_CONTENTS WHERE SCN > ? AND SCN <= ? " +
-            "AND SRC_CON_NAME = '" + TestHelper.DATABASE + "' " +
+            "${systemTablePredicate}" +
             "AND ((" +
             "OPERATION_CODE IN (6,7,34,36)) OR " +
-            "((OPERATION_CODE IN ${operationCodes} OR " +
+            "(" +
+            "SRC_CON_NAME = '" + TestHelper.DATABASE + "' AND " +
+            "(OPERATION_CODE IN ${operationCodes} OR " +
             "(OPERATION_CODE = 5 AND USERNAME NOT IN ('SYS','SYSTEM') " +
             "AND INFO NOT LIKE 'INTERNAL DDL%' " +
             "AND (TABLE_NAME IS NULL OR TABLE_NAME NOT LIKE 'ORA_TEMP_%'))) " +
             "AND TABLE_NAME != '" + LogWriterFlushStrategy.LOGMNR_FLUSH_TABLE + "' " +
-            "${systemTablePredicate}" +
             "${schemaPredicate}" +
             "${tablePredicate}" +
             "))";
+
+    @After
+    public void after() {
+        if (schema != null) {
+            try {
+                schema.close();
+            }
+            finally {
+                schema = null;
+            }
+        }
+    }
 
     @Test
     @FixFor("DBZ-3009")
     public void testLogMinerQueryWithNoFilters() {
         Configuration config = TestHelper.defaultConfig().build();
         OracleConnectorConfig connectorConfig = new OracleConnectorConfig(config);
-        OracleDatabaseSchema schema = createSchema(connectorConfig);
+        schema = createSchema(connectorConfig);
 
         String result = LogMinerQueryBuilder.build(connectorConfig, schema);
         assertThat(result).isEqualTo(resolveLogMineryContentQueryFromTemplate(connectorConfig, schema, null, null));
@@ -181,7 +198,7 @@ public class LogMinerQueryBuilderTest {
     private void assertQueryWithConfig(Field field, Object fieldValue, String schemaValue, String tableValue) {
         Configuration config = TestHelper.defaultConfig().with(field, fieldValue).build();
         OracleConnectorConfig connectorConfig = new OracleConnectorConfig(config);
-        OracleDatabaseSchema schema = createSchema(connectorConfig);
+        schema = createSchema(connectorConfig);
 
         String result = LogMinerQueryBuilder.build(connectorConfig, schema);
         assertThat(result).isEqualTo(resolveLogMineryContentQueryFromTemplate(connectorConfig, schema, schemaValue, tableValue));
@@ -208,7 +225,7 @@ public class LogMinerQueryBuilderTest {
     private void assertQueryWithConfig(Field field1, Object fieldValue1, Field field2, Object fieldValue2, String schemaValue, String tableValue) {
         Configuration config = TestHelper.defaultConfig().with(field1, fieldValue1).with(field2, fieldValue2).build();
         OracleConnectorConfig connectorConfig = new OracleConnectorConfig(config);
-        OracleDatabaseSchema schema = createSchema(connectorConfig);
+        schema = createSchema(connectorConfig);
 
         String result = LogMinerQueryBuilder.build(connectorConfig, schema);
         assertThat(result).isEqualTo(resolveLogMineryContentQueryFromTemplate(connectorConfig, schema, schemaValue, tableValue));
@@ -246,7 +263,8 @@ public class LogMinerQueryBuilderTest {
 
         if (!OracleConnectorConfig.EXCLUDED_SCHEMAS.isEmpty()) {
             StringBuilder systemPredicate = new StringBuilder();
-            systemPredicate.append("AND SEG_OWNER NOT IN (");
+            systemPredicate.append("AND (SEG_OWNER IS NULL ");
+            systemPredicate.append("OR SEG_OWNER NOT IN (");
             for (Iterator<String> i = OracleConnectorConfig.EXCLUDED_SCHEMAS.iterator(); i.hasNext();) {
                 String excludedSchema = i.next();
                 systemPredicate.append("'").append(excludedSchema.toUpperCase()).append("'");
@@ -254,7 +272,7 @@ public class LogMinerQueryBuilderTest {
                     systemPredicate.append(",");
                 }
             }
-            systemPredicate.append(") ");
+            systemPredicate.append(")) ");
             query = query.replace("${systemTablePredicate}", systemPredicate.toString());
         }
         else {
@@ -274,7 +292,7 @@ public class LogMinerQueryBuilderTest {
         TableNameCaseSensitivity tableNameSensitivity = connectorConfig.getAdapter().getTableNameCaseSensitivity(connection);
 
         TopicSelector<TableId> topicSelector = OracleTopicSelector.defaultSelector(connectorConfig);
-        SchemaNameAdjuster schemaNameAdjuster = SchemaNameAdjuster.create();
+        SchemaNameAdjuster schemaNameAdjuster = connectorConfig.schemaNameAdjustmentMode().createAdjuster();
 
         return new OracleDatabaseSchema(connectorConfig, converters, defaultValueConverter, schemaNameAdjuster, topicSelector, tableNameSensitivity);
     }

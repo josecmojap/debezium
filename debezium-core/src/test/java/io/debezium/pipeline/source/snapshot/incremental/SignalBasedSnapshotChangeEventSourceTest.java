@@ -13,6 +13,7 @@ import io.debezium.connector.SourceInfoStructMaker;
 import io.debezium.jdbc.JdbcConnection;
 import io.debezium.pipeline.source.spi.DataChangeEventListener;
 import io.debezium.pipeline.source.spi.SnapshotProgressListener;
+import io.debezium.pipeline.spi.Partition;
 import io.debezium.relational.Column;
 import io.debezium.relational.ColumnFilterMode;
 import io.debezium.relational.RelationalDatabaseConnectorConfig;
@@ -44,9 +45,9 @@ public class SignalBasedSnapshotChangeEventSourceTest {
 
     @Test
     public void testBuildQueryOnePkColumn() {
-        final SignalBasedIncrementalSnapshotChangeEventSource<TableId> source = new SignalBasedIncrementalSnapshotChangeEventSource<>(
-                config(), new JdbcConnection(config().getConfig(), config -> null, "\"", "\""), null, null, null, SnapshotProgressListener.NO_OP,
-                DataChangeEventListener.NO_OP);
+        final SignalBasedIncrementalSnapshotChangeEventSource<? extends Partition, TableId> source = new SignalBasedIncrementalSnapshotChangeEventSource<>(
+                config(), new JdbcConnection(config().getJdbcConfig(), config -> null, "\"", "\""), null, null, null, SnapshotProgressListener.NO_OP(),
+                DataChangeEventListener.NO_OP());
         final IncrementalSnapshotContext<TableId> context = new SignalBasedIncrementalSnapshotContext<>();
         source.setContext(context);
         final Column pk1 = Column.editor().name("pk1").create();
@@ -57,18 +58,18 @@ public class SignalBasedSnapshotChangeEventSourceTest {
                 .addColumn(val1)
                 .addColumn(val2)
                 .setPrimaryKeyNames("pk1").create();
-        Assertions.assertThat(source.buildChunkQuery(table)).isEqualTo("SELECT * FROM \"s1\".\"table1\" ORDER BY pk1 LIMIT 1024");
+        Assertions.assertThat(source.buildChunkQuery(table)).isEqualTo("SELECT * FROM \"s1\".\"table1\" ORDER BY \"pk1\" LIMIT 1024");
         context.nextChunkPosition(new Object[]{ 1, 5 });
         context.maximumKey(new Object[]{ 10, 50 });
         Assertions.assertThat(source.buildChunkQuery(table)).isEqualTo(
-                "SELECT * FROM \"s1\".\"table1\" WHERE (pk1 > ?) AND NOT (pk1 > ?) ORDER BY pk1 LIMIT 1024");
+                "SELECT * FROM \"s1\".\"table1\" WHERE (\"pk1\" > ?) AND NOT (\"pk1\" > ?) ORDER BY \"pk1\" LIMIT 1024");
     }
 
     @Test
     public void testBuildQueryThreePkColumns() {
-        final SignalBasedIncrementalSnapshotChangeEventSource<TableId> source = new SignalBasedIncrementalSnapshotChangeEventSource<>(
-                config(), new JdbcConnection(config().getConfig(), config -> null, "\"", "\""), null, null, null, SnapshotProgressListener.NO_OP,
-                DataChangeEventListener.NO_OP);
+        final SignalBasedIncrementalSnapshotChangeEventSource<? extends Partition, TableId> source = new SignalBasedIncrementalSnapshotChangeEventSource<>(
+                config(), new JdbcConnection(config().getJdbcConfig(), config -> null, "\"", "\""), null, null, null, SnapshotProgressListener.NO_OP(),
+                DataChangeEventListener.NO_OP());
         final IncrementalSnapshotContext<TableId> context = new SignalBasedIncrementalSnapshotContext<>();
         source.setContext(context);
         final Column pk1 = Column.editor().name("pk1").create();
@@ -83,24 +84,24 @@ public class SignalBasedSnapshotChangeEventSourceTest {
                 .addColumn(val1)
                 .addColumn(val2)
                 .setPrimaryKeyNames("pk1", "pk2", "pk3").create();
-        Assertions.assertThat(source.buildChunkQuery(table)).isEqualTo("SELECT * FROM \"s1\".\"table1\" ORDER BY pk1, pk2, pk3 LIMIT 1024");
+        Assertions.assertThat(source.buildChunkQuery(table)).isEqualTo("SELECT * FROM \"s1\".\"table1\" ORDER BY \"pk1\", \"pk2\", \"pk3\" LIMIT 1024");
         context.nextChunkPosition(new Object[]{ 1, 5 });
         context.maximumKey(new Object[]{ 10, 50 });
         Assertions.assertThat(source.buildChunkQuery(table)).isEqualTo(
-                "SELECT * FROM \"s1\".\"table1\" WHERE ((pk1 > ?) OR (pk1 = ? AND pk2 > ?) OR (pk1 = ? AND pk2 = ? AND pk3 > ?)) AND NOT ((pk1 > ?) OR (pk1 = ? AND pk2 > ?) OR (pk1 = ? AND pk2 = ? AND pk3 > ?)) ORDER BY pk1, pk2, pk3 LIMIT 1024");
+                "SELECT * FROM \"s1\".\"table1\" WHERE ((\"pk1\" > ?) OR (\"pk1\" = ? AND \"pk2\" > ?) OR (\"pk1\" = ? AND \"pk2\" = ? AND \"pk3\" > ?)) AND NOT ((\"pk1\" > ?) OR (\"pk1\" = ? AND \"pk2\" > ?) OR (\"pk1\" = ? AND \"pk2\" = ? AND \"pk3\" > ?)) ORDER BY \"pk1\", \"pk2\", \"pk3\" LIMIT 1024");
     }
 
     @Test
     public void testMaxQuery() {
-        final SignalBasedIncrementalSnapshotChangeEventSource<TableId> source = new SignalBasedIncrementalSnapshotChangeEventSource<>(
-                config(), new JdbcConnection(config().getConfig(), config -> null, "\"", "\""), null, null, null, SnapshotProgressListener.NO_OP,
-                DataChangeEventListener.NO_OP);
+        final SignalBasedIncrementalSnapshotChangeEventSource<? extends Partition, TableId> source = new SignalBasedIncrementalSnapshotChangeEventSource<>(
+                config(), new JdbcConnection(config().getJdbcConfig(), config -> null, "\"", "\""), null, null, null, SnapshotProgressListener.NO_OP(),
+                DataChangeEventListener.NO_OP());
         final Column pk1 = Column.editor().name("pk1").create();
         final Column pk2 = Column.editor().name("pk2").create();
         final Column val1 = Column.editor().name("val1").create();
         final Column val2 = Column.editor().name("val2").create();
         final Table table = Table.editor().tableId(new TableId(null, "s1", "table1")).addColumn(pk1).addColumn(pk2)
                 .addColumn(val1).addColumn(val2).setPrimaryKeyNames("pk1", "pk2").create();
-        Assertions.assertThat(source.buildMaxPrimaryKeyQuery(table)).isEqualTo("SELECT * FROM \"s1\".\"table1\" ORDER BY pk1 DESC, pk2 DESC LIMIT 1");
+        Assertions.assertThat(source.buildMaxPrimaryKeyQuery(table)).isEqualTo("SELECT * FROM \"s1\".\"table1\" ORDER BY \"pk1\" DESC, \"pk2\" DESC LIMIT 1");
     }
 }

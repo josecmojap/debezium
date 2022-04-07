@@ -19,9 +19,11 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import org.awaitility.Awaitility;
@@ -82,12 +84,14 @@ public final class TestHelper {
      *
      * @param slotName the name of the logical decoding slot
      * @param dropOnClose true if the slot should be dropped upon close
+     * @param connectorConfig customized connector configuration
      * @return the PostgresConnection instance; never null
      * @throws SQLException if there is a problem obtaining a replication connection
      */
-    public static ReplicationConnection createForReplication(String slotName, boolean dropOnClose) throws SQLException {
+    public static ReplicationConnection createForReplication(String slotName, boolean dropOnClose,
+                                                             PostgresConnectorConfig config)
+            throws SQLException {
         final PostgresConnectorConfig.LogicalDecoder plugin = decoderPlugin();
-        final PostgresConnectorConfig config = new PostgresConnectorConfig(defaultConfig().build());
         return ReplicationConnection.builder(config)
                 .withPlugin(plugin)
                 .withSlot(slotName)
@@ -96,6 +100,18 @@ public final class TestHelper {
                 .statusUpdateInterval(Duration.ofSeconds(10))
                 .withSchema(getSchema(config))
                 .build();
+    }
+
+    /**
+     * Obtain a replication connection instance for the given slot name.
+     *
+     * @param slotName the name of the logical decoding slot
+     * @param dropOnClose true if the slot should be dropped upon close
+     * @return the PostgresConnection instance; never null
+     * @throws SQLException if there is a problem obtaining a replication connection
+     */
+    public static ReplicationConnection createForReplication(String slotName, boolean dropOnClose) throws SQLException {
+        return createForReplication(slotName, dropOnClose, new PostgresConnectorConfig(defaultConfig().build()));
     }
 
     /**
@@ -136,7 +152,7 @@ public final class TestHelper {
      * @return the PostgresConnection instance; never null
      */
     public static PostgresConnection create(String appName) {
-        return new PostgresConnection(defaultJdbcConfig().edit().with("ApplicationName", appName).build());
+        return new PostgresConnection(JdbcConfiguration.adapt(defaultJdbcConfig().edit().with("ApplicationName", appName).build()));
     }
 
     /**
@@ -231,7 +247,7 @@ public final class TestHelper {
 
     protected static Set<String> schemaNames() throws SQLException {
         try (PostgresConnection connection = create()) {
-            return connection.readAllSchemaNames(Filters.IS_SYSTEM_SCHEMA.negate());
+            return connection.readAllSchemaNames(((Predicate<String>) Arrays.asList("pg_catalog", "information_schema")::contains).negate());
         }
     }
 
@@ -243,12 +259,10 @@ public final class TestHelper {
                 .withDefault(JdbcConfiguration.PORT, 5432)
                 .withDefault(JdbcConfiguration.USER, "postgres")
                 .withDefault(JdbcConfiguration.PASSWORD, "postgres")
-                .with(PostgresConnectorConfig.MAX_RETRIES, 2)
-                .with(PostgresConnectorConfig.RETRY_DELAY_MS, 2000)
                 .build();
     }
 
-    protected static Configuration.Builder defaultConfig() {
+    public static Configuration.Builder defaultConfig() {
         JdbcConfiguration jdbcConfiguration = defaultJdbcConfig();
         Configuration.Builder builder = Configuration.create();
         jdbcConfiguration.forEach((field, value) -> builder.with(PostgresConnectorConfig.DATABASE_CONFIG_PREFIX + field, value));
@@ -256,7 +270,9 @@ public final class TestHelper {
                 .with(PostgresConnectorConfig.DROP_SLOT_ON_STOP, true)
                 .with(PostgresConnectorConfig.STATUS_UPDATE_INTERVAL_MS, 100)
                 .with(PostgresConnectorConfig.PLUGIN_NAME, decoderPlugin())
-                .with(PostgresConnectorConfig.SSL_MODE, SecureConnectionMode.DISABLED);
+                .with(PostgresConnectorConfig.SSL_MODE, SecureConnectionMode.DISABLED)
+                .with(PostgresConnectorConfig.MAX_RETRIES, 2)
+                .with(PostgresConnectorConfig.RETRY_DELAY_MS, 2000);
         final String testNetworkTimeout = System.getProperty(TEST_PROPERTY_PREFIX + "network.timeout");
         if (testNetworkTimeout != null && testNetworkTimeout.length() != 0) {
             builder.with(PostgresConnectorConfig.STATUS_UPDATE_INTERVAL_MS, Integer.parseInt(testNetworkTimeout));
@@ -271,7 +287,7 @@ public final class TestHelper {
                 .stream()
                 .collect(Collectors.joining(System.lineSeparator()));
         try (PostgresConnection connection = create()) {
-            connection.executeWithoutCommitting(statements);
+            connection.execute(statements);
         }
     }
 

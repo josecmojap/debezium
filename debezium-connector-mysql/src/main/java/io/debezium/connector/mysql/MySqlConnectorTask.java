@@ -68,7 +68,7 @@ public class MySqlConnectorTask extends BaseSourceTask<MySqlPartition, MySqlOffs
                         .with(AbstractDatabaseHistory.INTERNAL_PREFER_DDL, true)
                         .build());
         final TopicSelector<TableId> topicSelector = MySqlTopicSelector.defaultSelector(connectorConfig);
-        final SchemaNameAdjuster schemaNameAdjuster = SchemaNameAdjuster.create();
+        final SchemaNameAdjuster schemaNameAdjuster = connectorConfig.schemaNameAdjustmentMode().createAdjuster();
         final MySqlValueConverters valueConverters = getValueConverters(connectorConfig);
 
         // DBZ-3238: automatically set "useCursorFetch" to true when a snapshot fetch size other than the default of -1 is given
@@ -80,8 +80,8 @@ public class MySqlConnectorTask extends BaseSourceTask<MySqlPartition, MySqlOffs
                 .build();
 
         connection = new MySqlConnection(new MySqlConnectionConfiguration(config),
-                connectorConfig.useCursorFetch() ? new MysqlBinaryProtocolFieldReader()
-                        : new MysqlTextProtocolFieldReader());
+                connectorConfig.useCursorFetch() ? new MysqlBinaryProtocolFieldReader(connectorConfig)
+                        : new MysqlTextProtocolFieldReader(connectorConfig));
 
         validateBinlogConfiguration(connectorConfig);
 
@@ -133,15 +133,15 @@ public class MySqlConnectorTask extends BaseSourceTask<MySqlPartition, MySqlOffs
                 .buffering()
                 .build();
 
-        errorHandler = new MySqlErrorHandler(connectorConfig.getLogicalName(), queue);
+        errorHandler = new MySqlErrorHandler(connectorConfig, queue);
 
         final MySqlEventMetadataProvider metadataProvider = new MySqlEventMetadataProvider();
 
         Heartbeat heartbeat = null;
         if (!connectorConfig.getHeartbeatActionQuery().isEmpty()) {
             heartbeatConnection = new MySqlConnection(new MySqlConnectionConfiguration(config),
-                    connectorConfig.useCursorFetch() ? new MysqlBinaryProtocolFieldReader()
-                            : new MysqlTextProtocolFieldReader());
+                    connectorConfig.useCursorFetch() ? new MysqlBinaryProtocolFieldReader(connectorConfig)
+                            : new MysqlTextProtocolFieldReader(connectorConfig));
 
             heartbeat = Heartbeat.create(
                     connectorConfig.getHeartbeatInterval(),
@@ -159,10 +159,10 @@ public class MySqlConnectorTask extends BaseSourceTask<MySqlPartition, MySqlOffs
                             default:
                                 break;
                         }
-                    });
+                    }, schemaNameAdjuster);
         }
 
-        final EventDispatcher<TableId> dispatcher = new EventDispatcher<>(
+        final EventDispatcher<MySqlPartition, TableId> dispatcher = new EventDispatcher<>(
                 connectorConfig,
                 topicSelector,
                 schema,
@@ -172,8 +172,7 @@ public class MySqlConnectorTask extends BaseSourceTask<MySqlPartition, MySqlOffs
                 null,
                 metadataProvider,
                 heartbeat,
-                schemaNameAdjuster,
-                connection);
+                schemaNameAdjuster);
 
         final MySqlStreamingChangeEventSourceMetrics streamingMetrics = new MySqlStreamingChangeEventSourceMetrics(taskContext, queue, metadataProvider);
 
